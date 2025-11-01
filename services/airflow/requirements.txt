@@ -1,0 +1,6 @@
+apache-airflow-providers-postgres
+apache-airflow-providers-redis
+apache-airflow-providers-http
+polars[pyarrow]
+psycopg2-binary
+pyarrow

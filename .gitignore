@@ -1,0 +1,19 @@
+# Environment and configuration files
+config/.env
+
+# Raw data - as per README, this is downloaded locally
+data/raw/home-credit-default-risk/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/

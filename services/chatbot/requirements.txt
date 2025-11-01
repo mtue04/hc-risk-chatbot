@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+langchain
+langchain-community
+langgraph
+google-generativeai
+structlog
+httpx
+requests
+pandas
+python-dotenv
