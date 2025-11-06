@@ -1,8 +1,8 @@
 # Environment and configuration files
 config/.env
 
-# Raw data - as per README, this is downloaded locally
-data/raw/home-credit-default-risk/
+# Data files - exclude all data files from git
+data/
 
 # Python virtual environments
 .venv/
