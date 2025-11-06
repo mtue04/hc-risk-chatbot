@@ -1,0 +1,9 @@
+{
+  "model_type": "LightGBM",
+  "approach": "Without SMOTE",
+  "auc_score": 0.7864328733338257,
+  "n_features": 170,
+  "train_samples": 246008,
+  "test_samples": 61503,
+  "default_rate": 0.08072881945686496
+}
