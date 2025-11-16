@@ -1,0 +1,238 @@
+{
+  "model_info": {
+    "model_type": "LightGBM Classifier",
+    "version": "4.6.0",
+    "best_iteration": 1024,
+    "n_features": 170,
+    "training_samples": 184506
+  },
+  "optimization": {
+    "methods_used": [
+      "random_search",
+      "optuna"
+    ],
+    "best_method": "known_best",
+    "total_optimization_time_seconds": 2119.9567613601685,
+    "optimization_results": {
+      "random_search": {
+        "best_params": {
+          "colsample_bytree": 0.8493192507310232,
+          "learning_rate": 0.026946865572417687,
+          "max_depth": 9,
+          "min_child_samples": 456,
+          "min_child_weight": 0.010151348978007608,
+          "min_split_gain": 0.009948716832761025,
+          "n_estimators": 783,
+          "num_leaves": 36,
+          "reg_alpha": 2.7293781650374753,
+          "reg_lambda": 0.022965432344634346,
+          "subsample": 0.6478376983753207,
+          "subsample_freq": 3
+        },
+        "best_cv_score": 0.7815382579989898,
+        "cv_std": 0.002523904122192155,
+        "time_taken": 1436.5814039707184
+      },
+      "optuna": {
+        "best_params": {
+          "num_leaves": 31,
+          "max_depth": 10,
+          "learning_rate": 0.018187859051288217,
+          "n_estimators": 820,
+          "min_child_samples": 317,
+          "min_child_weight": 0.000137832374550072,
+          "subsample": 0.8430179407605753,
+          "colsample_bytree": 0.6682096494749166,
+          "reg_alpha": 0.00021147447960615738,
+          "reg_lambda": 5.5517216852447255,
+          "min_split_gain": 0.07886714129990492,
+          "subsample_freq": 9
+        },
+        "best_cv_score": 0.7821641409150487,
+        "n_trials": 8,
+        "time_taken": 615.3467228412628
+      }
+    }
+  },
+  "performance": {
+    "train_metrics": {
+      "auc": 0.8635315643746933,
+      "avg_precision": 0.37130618889946976,
+      "f1": 0.35487869665309013,
+      "precision": 0.22743006298587073,
+      "recall": 0.8072507552870091
+    },
+    "validation_metrics": {
+      "auc": 0.7807228664574763,
+      "avg_precision": 0.26784051012938564,
+      "f1": 0.2918794121564623,
+      "precision": 0.18720811026312792,
+      "recall": 0.6620342396777442
+    },
+    "test_metrics": {
+      "auc": 0.7877023953125912,
+      "avg_precision": 0.2864402160086491,
+      "f1": 0.30258269549259204,
+      "precision": 0.19452117863720073,
+      "recall": 0.6807653575025177
+    },
+    "overfitting_check": {
+      "train_val_auc_diff": 0.0828086979172169,
+      "overfitting_detected": true
+    }
+  },
+  "data_info": {
+    "total_samples": 307511,
+    "train_samples": 184506,
+    "validation_samples": 61502,
+    "test_samples": 61503,
+    "n_features_original": 170,
+    "n_features_final": 170,
+    "target_distribution": {
+      "class_0": 282686,
+      "class_1": 24825,
+      "imbalance_ratio": 0.08781828601345662,
+      "scale_pos_weight": 11.387150050352467
+    }
+  },
+  "feature_importance": {
+    "top_20_features": [
+      {
+        "feature": "CREDIT_ANNUITY_YEARS",
+        "importance": 407,
+        "cumulative_importance": 0.024859516247251405
+      },
+      {
+        "feature": "DAYS_BIRTH",
+        "importance": 377,
+        "cumulative_importance": 0.047886635719521134
+      },
+      {
+        "feature": "KNN_TARGET_MEAN_500",
+        "importance": 364,
+        "cumulative_importance": 0.0701197165892988
+      },
+      {
+        "feature": "ANNUITY_CREDIT_RATIO",
+        "importance": 284,
+        "cumulative_importance": 0.08746640605912534
+      },
+      {
+        "feature": "DAYS_ID_PUBLISH",
+        "importance": 283,
+        "cumulative_importance": 0.10475201563645248
+      },
+      {
+        "feature": "INST_AMT_INSTALMENT_SUM",
+        "importance": 261,
+        "cumulative_importance": 0.12069386757879307
+      },
+      {
+        "feature": "INST_AMT_INSTALMENT_MAX",
+        "importance": 244,
+        "cumulative_importance": 0.13559736134864403
+      },
+      {
+        "feature": "POS_CNT_INSTALMENT_MEAN",
+        "importance": 242,
+        "cumulative_importance": 0.1503786953334962
+      },
+      {
+        "feature": "DAYS_REGISTRATION",
+        "importance": 241,
+        "cumulative_importance": 0.16509894942584902
+      },
+      {
+        "feature": "DAYS_EMPLOYED",
+        "importance": 237,
+        "cumulative_importance": 0.17957488394820426
+      },
+      {
+        "feature": "BUREAU_DAYS_CREDIT_MAX",
+        "importance": 236,
+        "cumulative_importance": 0.1939897385780601
+      },
+      {
+        "feature": "BUREAU_AMT_CREDIT_SUM_MAX",
+        "importance": 212,
+        "cumulative_importance": 0.20693867578793063
+      },
+      {
+        "feature": "EXT_SOURCE_MIN",
+        "importance": 208,
+        "cumulative_importance": 0.21964329342780356
+      },
+      {
+        "feature": "PREV_DAYS_DECISION_MIN",
+        "importance": 205,
+        "cumulative_importance": 0.23216467139017835
+      },
+      {
+        "feature": "EXT_SOURCE_MEAN",
+        "importance": 203,
+        "cumulative_importance": 0.24456388956755437
+      },
+      {
+        "feature": "DAYS_LAST_PHONE_CHANGE",
+        "importance": 195,
+        "cumulative_importance": 0.2564744686049353
+      },
+      {
+        "feature": "POS_CNT_INSTALMENT_SUM",
+        "importance": 195,
+        "cumulative_importance": 0.26838504764231613
+      },
+      {
+        "feature": "INST_DAYS_DIFF_MEAN",
+        "importance": 194,
+        "cumulative_importance": 0.28023454678719767
+      },
+      {
+        "feature": "POS_MONTHS_BALANCE_MAX",
+        "importance": 188,
+        "cumulative_importance": 0.2917175665770828
+      },
+      {
+        "feature": "ANNUITY_INCOME_RATIO",
+        "importance": 186,
+        "cumulative_importance": 0.3030784265819692
+      }
+    ],
+    "category_importance": {
+      "Counts/Flags": 786,
+      "Amounts": 908,
+      "Credit": 1347,
+      "External Sources": 1507,
+      "Days/Time": 1801,
+      "Bureau": 2523,
+      "Previous Applications": 3162,
+      "Other": 4338
+    }
+  },
+  "training_info": {
+    "timestamp": "20251112_173040",
+    "training_date": "2025-11-12T17:30:40.313153",
+    "notebook_version": "02_hyperparameter_tuning_optimized",
+    "final_parameters": {
+      "random_state": 42,
+      "scale_pos_weight": 11.387150050352467,
+      "objective": "binary",
+      "verbosity": -1,
+      "device": "gpu",
+      "boosting_type": "gbdt",
+      "metric": "auc",
+      "colsample_bytree": 0.7763050987752913,
+      "learning_rate": 0.03322039280627904,
+      "max_depth": 8,
+      "min_child_samples": 484,
+      "min_child_weight": 0.00029222726791811385,
+      "min_split_gain": 0.0003513859492213059,
+      "n_estimators": 1024,
+      "num_leaves": 17,
+      "reg_alpha": 0.007354388726789682,
+      "reg_lambda": 0.0022579970267080783,
+      "subsample": 0.8575998172956063,
+      "subsample_freq": 1
+    }
+  }
+}
