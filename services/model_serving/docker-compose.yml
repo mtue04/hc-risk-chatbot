@@ -1,35 +1,33 @@
+version: '3.8'
+
 services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
   postgres:
     image: postgres:16-alpine
-    restart: unless-stopped
-    env_file:
-      - config/.env
+    container_name: hc-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-hc_admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hc_password}
       POSTGRES_DB: ${POSTGRES_DB:-homecredit_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+      - ./data/raw:/data/raw:ro
     ports:
       - "5432:5432"
     healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U ${POSTGRES_USER:-hc_admin} -d ${POSTGRES_DB:-homecredit_db}
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hc_admin}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    command:
-      - "postgres"
-      - "-c"
-      - "max_wal_size=4GB"
-      - "-c"
-      - "min_wal_size=1GB"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d
-      - ./data/raw/home-credit-default-risk:/data/home-credit:ro
     networks:
       - hc-network
 
+  # ============================================
+  # Model Serving API
+  # ============================================
   model_serving:
     build:
       context: ./services/model_serving
@@ -41,9 +39,10 @@ services:
       - ENABLE_SHAP=true
       - DEFAULT_THRESHOLD=0.5
     volumes:
+      # Mount trained models (read-only)
       - ./models:/app/models:ro
     ports:
-      - "8001:8000"
+      - "8000:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -57,9 +56,16 @@ services:
       postgres:
         condition: service_healthy
 
+# ============================================
+# Volumes
+# ============================================
 volumes:
-  pgdata:
+  postgres_data:
+    driver: local
 
+# ============================================
+# Networks
+# ============================================
 networks:
   hc-network:
     driver: bridge
