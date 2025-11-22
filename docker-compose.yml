@@ -30,6 +30,57 @@ services:
     networks:
       - hc-network
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    networks:
+      - hc-network
+    command: redis-server --appendonly yes
+
+  airflow:
+    build:
+      context: ./services/airflow
+      dockerfile: Dockerfile
+    container_name: hc-airflow
+    env_file:
+      - config/.env
+    environment:
+      - AIRFLOW__CORE__LOAD_EXAMPLES=false
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=false
+      - AIRFLOW_HOME=/opt/airflow
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./services/airflow/dags:/opt/airflow/dags
+      - ./services/airflow/logs:/opt/airflow/logs
+      - ./services/airflow/plugins:/opt/airflow/plugins
+      - ./services/feast/feature_repo:/opt/feast/feature_repo
+      - airflow_data:/opt/airflow
+    networks:
+      - hc-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: standalone
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
   model_serving:
     build:
       context: ./services/model_serving
@@ -59,6 +110,8 @@ services:
 
 volumes:
   pgdata:
+  redis_data:
+  airflow_data:
 
 networks:
   hc-network:

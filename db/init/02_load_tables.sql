@@ -94,3 +94,24 @@ WITH (
     DELIMITER ',',
     NULL ''
 );
+
+TRUNCATE TABLE home_credit.previous_application;
+TRUNCATE TABLE home_credit.installments_payments;
+
+COPY home_credit.previous_application
+FROM '/data/home-credit/previous_application.csv'
+WITH (
+    FORMAT csv,
+    HEADER true,
+    DELIMITER ',',
+    NULL ''
+);
+
+COPY home_credit.installments_payments
+FROM '/data/home-credit/installments_payments.csv'
+WITH (
+    FORMAT csv,
+    HEADER true,
+    DELIMITER ',',
+    NULL ''
+);

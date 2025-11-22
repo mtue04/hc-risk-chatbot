@@ -10,6 +10,14 @@ import joblib
 import numpy as np
 from pydantic import BaseModel, Field, ConfigDict
 
+# Import Feast client
+try:
+    from feast_client import get_feast_client
+    FEAST_ENABLED = True
+except ImportError:
+    FEAST_ENABLED = False
+    logging.warning("Feast client not available")
+
 # --- Config ---
 class Settings:
     app_name = "HC Risk Model Serving"
@@ -42,8 +50,18 @@ class FeatureVector(BaseModel):
 
 class BatchRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
-    
+
     records: List[FeatureVector]
+
+class ApplicantRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    applicant_id: int = Field(..., description="SK_ID_CURR of the applicant")
+
+class BatchApplicantRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+    applicant_ids: List[int] = Field(..., description="List of SK_ID_CURR values")
 
 class PredictionOutput(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
@@ -82,6 +100,19 @@ def load_model(path: Path):
         return None
 
 model = load_model(MODEL_PATH)
+
+# --- Feast Client ---
+feast_client = None
+if FEAST_ENABLED:
+    try:
+        feast_client = get_feast_client()
+        if feast_client.is_available():
+            logger.info("Feast feature store integration enabled")
+        else:
+            logger.warning("Feast feature store not available")
+    except Exception as e:
+        logger.error(f"Failed to initialize Feast client: {e}")
+        feast_client = None
 
 # --- FastAPI App ---
 app = FastAPI(
@@ -124,12 +155,20 @@ async def general_exception_handler(request, exc):
 @app.get("/health", response_model=HealthResponse)
 def health_check():
     status_str = "healthy" if model is not None else "unhealthy"
-    return HealthResponse(
+    feast_available = feast_client is not None and feast_client.is_available() if FEAST_ENABLED else False
+
+    response = HealthResponse(
         status=status_str,
         version=settings.app_version,
         model_loaded=model is not None,
         uptime_seconds=time.time() - startup_time
     )
+
+    # Add Feast status to response (as extra field)
+    response_dict = response.model_dump()
+    response_dict["feast_available"] = feast_available
+
+    return response_dict
 
 # --- Prediction Logic ---
 def score_stub(vector: Dict[str, float]) -> float:
@@ -206,6 +245,85 @@ def explain(payload: FeatureVector):
         "message": "SHAP integration not yet implemented.",
         "features": payload.features,
     }
+
+# --- Feast-powered Endpoints ---
+
+@app.post("/predict/applicant", response_model=PredictionOutput)
+def predict_applicant(payload: ApplicantRequest):
+    """
+    Predict default probability for an applicant using Feast feature store.
+
+    This endpoint fetches features from the Feast online store based on
+    applicant ID (SK_ID_CURR) and returns the prediction.
+    """
+    if not FEAST_ENABLED or feast_client is None or not feast_client.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Feast feature store not available. Use /predict endpoint with explicit features."
+        )
+
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Fetch features from Feast
+    features_dict = feast_client.get_features(payload.applicant_id)
+
+    if features_dict is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Features not found for applicant {payload.applicant_id}"
+        )
+
+    # Convert to FeatureVector and predict
+    feature_vector = FeatureVector(features=features_dict)
+    return predict(feature_vector)
+
+
+@app.post("/predict/applicant/batch")
+def predict_applicant_batch(payload: BatchApplicantRequest):
+    """
+    Batch prediction for multiple applicants using Feast feature store.
+
+    Fetches features from Feast online store for all applicants and
+    returns predictions for each.
+    """
+    if not FEAST_ENABLED or feast_client is None or not feast_client.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Feast feature store not available. Use /predict/batch endpoint."
+        )
+
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Fetch features from Feast
+    features_list = feast_client.get_features_batch(payload.applicant_ids)
+
+    if features_list is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to fetch features from Feast"
+        )
+
+    # Predict for each applicant
+    results = []
+    for i, features_dict in enumerate(features_list):
+        try:
+            feature_vector = FeatureVector(features=features_dict)
+            prediction = predict(feature_vector)
+            results.append({
+                "applicant_id": payload.applicant_ids[i],
+                **prediction.model_dump()
+            })
+        except Exception as e:
+            logger.error(f"Prediction failed for applicant {payload.applicant_ids[i]}: {e}")
+            results.append({
+                "applicant_id": payload.applicant_ids[i],
+                "error": str(e)
+            })
+
+    return {"predictions": results}
+
 
 if __name__ == "__main__":
     import uvicorn

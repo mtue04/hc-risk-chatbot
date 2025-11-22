@@ -4,3 +4,7 @@ apache-airflow-providers-http
 polars[pyarrow]
 psycopg2-binary
 pyarrow
+feast[postgres,redis]
+scikit-learn
+numpy
+pandas

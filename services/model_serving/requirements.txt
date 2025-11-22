@@ -13,3 +13,6 @@ python-json-logger
 prometheus-client
 psutil
 matplotlib
+# Feast feature store integration
+feast[postgres,redis]
+psycopg2-binary
