@@ -200,62 +200,61 @@ def engineer_features(**context):
     del df_bureau, bureau_agg  # Free memory
     logger.info("Bureau features complete, memory freed")
 
-    # 5. Previous application aggregations (load table on-demand)
-    logger.info("Loading previous_application table...")
-    df_previous = read_table_via_pandas(engine, "SELECT * FROM home_credit.previous_application")
-    df_previous = df_previous.with_columns(pl.col("SK_ID_CURR").cast(pl.Int64))
-    logger.info(f"Loaded previous_application: {df_previous.shape}")
-
-    logger.info("Creating previous application aggregations...")
-    # Check which columns exist to avoid errors
-    prev_cols = df_previous.columns
-    logger.info(f"Previous application columns: {prev_cols}")
-
-    prev_agg = df_previous.group_by("SK_ID_CURR").agg([
-        pl.col("AMT_ANNUITY").mean().alias("PREV_AMT_ANNUITY_MEAN"),
-        pl.col("AMT_ANNUITY").max().alias("PREV_AMT_ANNUITY_MAX"),
-        pl.col("AMT_ANNUITY").min().alias("PREV_AMT_ANNUITY_MIN"),
-        pl.col("AMT_APPLICATION").mean().alias("PREV_AMT_APPLICATION_MEAN"),
-        pl.col("AMT_APPLICATION").max().alias("PREV_AMT_APPLICATION_MAX"),
-        pl.col("AMT_APPLICATION").sum().alias("PREV_AMT_APPLICATION_SUM"),
-        pl.col("AMT_GOODS_PRICE").mean().alias("PREV_AMT_GOODS_PRICE_MEAN"),
-        pl.col("HOUR_APPR_PROCESS_START").mean().alias("PREV_HOUR_APPR_PROCESS_START_MEAN"),
-        pl.col("DAYS_DECISION").mean().alias("PREV_DAYS_DECISION_MEAN"),
-        pl.col("DAYS_DECISION").min().alias("PREV_DAYS_DECISION_MIN"),
-        pl.col("CNT_PAYMENT").mean().alias("PREV_CNT_PAYMENT_MEAN"),
-        pl.col("CNT_PAYMENT").sum().alias("PREV_CNT_PAYMENT_SUM"),
-        pl.col("SK_ID_PREV").count().alias("PREV_SK_ID_PREV_COUNT"),
-        (pl.col("NAME_CONTRACT_STATUS") == "Approved").cast(pl.Int32).sum().cast(pl.Float64).alias("PREV_APPROVED_COUNT"),
-        pl.col("NAME_CONTRACT_TYPE").n_unique().cast(pl.Float64).alias("PREV_CONTRACT_TYPE_COUNT"),
-    ])
-
+    # 5. Previous application aggregations via SQL (avoid loading full table)
+    logger.info("Aggregating previous_application table via SQL...")
+    prev_agg_query = """
+    SELECT
+        "SK_ID_CURR",
+        AVG("AMT_ANNUITY") AS "PREV_AMT_ANNUITY_MEAN",
+        MAX("AMT_ANNUITY") AS "PREV_AMT_ANNUITY_MAX",
+        MIN("AMT_ANNUITY") AS "PREV_AMT_ANNUITY_MIN",
+        AVG("AMT_APPLICATION") AS "PREV_AMT_APPLICATION_MEAN",
+        MAX("AMT_APPLICATION") AS "PREV_AMT_APPLICATION_MAX",
+        SUM("AMT_APPLICATION") AS "PREV_AMT_APPLICATION_SUM",
+        AVG("AMT_GOODS_PRICE") AS "PREV_AMT_GOODS_PRICE_MEAN",
+        AVG("HOUR_APPR_PROCESS_START") AS "PREV_HOUR_APPR_PROCESS_START_MEAN",
+        AVG("DAYS_DECISION") AS "PREV_DAYS_DECISION_MEAN",
+        MIN("DAYS_DECISION") AS "PREV_DAYS_DECISION_MIN",
+        AVG("CNT_PAYMENT") AS "PREV_CNT_PAYMENT_MEAN",
+        SUM("CNT_PAYMENT") AS "PREV_CNT_PAYMENT_SUM",
+        COUNT("SK_ID_PREV") AS "PREV_SK_ID_PREV_COUNT",
+        SUM(CASE WHEN "NAME_CONTRACT_STATUS" = 'Approved' THEN 1 ELSE 0 END)::FLOAT AS "PREV_APPROVED_COUNT",
+        COUNT(DISTINCT "NAME_CONTRACT_TYPE")::FLOAT AS "PREV_CONTRACT_TYPE_COUNT"
+    FROM home_credit.previous_application
+    GROUP BY "SK_ID_CURR"
+    """
+    prev_agg = read_table_via_pandas(engine, prev_agg_query)
     prev_agg = prev_agg.with_columns([
+        pl.col("SK_ID_CURR").cast(pl.Int64),
         (pl.col("PREV_APPROVED_COUNT") / pl.col("PREV_SK_ID_PREV_COUNT")).alias("PREV_APPROVAL_RATE")
     ])
+    logger.info(f"Loaded previous application aggregations: {prev_agg.shape}")
 
     df = df.join(prev_agg, on="SK_ID_CURR", how="left")
-    del df_previous, prev_agg  # Free memory
+    del prev_agg  # Free memory
     logger.info("Previous application features complete, memory freed")
 
-    # 6. POS cash balance aggregations (load table on-demand)
-    logger.info("Loading pos_cash_balance table...")
-    df_pos_cash = read_table_via_pandas(engine, "SELECT * FROM home_credit.pos_cash_balance")
-    df_pos_cash = df_pos_cash.with_columns(pl.col("SK_ID_CURR").cast(pl.Int64))
-    logger.info(f"Loaded pos_cash_balance: {df_pos_cash.shape}")
-
-    logger.info("Creating POS cash aggregations...")
-    pos_agg = df_pos_cash.group_by("SK_ID_CURR").agg([
-        pl.col("MONTHS_BALANCE").mean().alias("POS_MONTHS_BALANCE_MEAN"),
-        pl.col("MONTHS_BALANCE").max().alias("POS_MONTHS_BALANCE_MAX"),
-        pl.col("CNT_INSTALMENT").mean().alias("POS_CNT_INSTALMENT_MEAN"),
-        pl.col("CNT_INSTALMENT").sum().alias("POS_CNT_INSTALMENT_SUM"),
-        pl.col("SK_DPD").mean().alias("POS_SK_DPD_MEAN"),
-        pl.col("SK_DPD").max().alias("POS_SK_DPD_MAX"),
-        pl.col("SK_DPD_DEF").mean().alias("POS_SK_DPD_DEF_MEAN"),
-    ])
+    # 6. POS cash balance aggregations via SQL
+    logger.info("Aggregating pos_cash_balance table via SQL...")
+    pos_agg_query = """
+    SELECT
+        "SK_ID_CURR",
+        AVG("MONTHS_BALANCE") AS "POS_MONTHS_BALANCE_MEAN",
+        MAX("MONTHS_BALANCE") AS "POS_MONTHS_BALANCE_MAX",
+        AVG("CNT_INSTALMENT") AS "POS_CNT_INSTALMENT_MEAN",
+        SUM("CNT_INSTALMENT") AS "POS_CNT_INSTALMENT_SUM",
+        AVG("SK_DPD") AS "POS_SK_DPD_MEAN",
+        MAX("SK_DPD") AS "POS_SK_DPD_MAX",
+        AVG("SK_DPD_DEF") AS "POS_SK_DPD_DEF_MEAN"
+    FROM home_credit.pos_cash_balance
+    GROUP BY "SK_ID_CURR"
+    """
+    pos_agg = read_table_via_pandas(engine, pos_agg_query)
+    pos_agg = pos_agg.with_columns(pl.col("SK_ID_CURR").cast(pl.Int64))
+    logger.info(f"Loaded POS cash aggregations: {pos_agg.shape}")
 
     df = df.join(pos_agg, on="SK_ID_CURR", how="left")
-    del df_pos_cash, pos_agg  # Free memory
+    del pos_agg
     logger.info("POS cash features complete, memory freed")
 
     # 7. Installments aggregations (use SQL to reduce memory)

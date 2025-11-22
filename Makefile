@@ -1,9 +1,10 @@
-.PHONY: build up down stop restart logs status psql reload seed
+.PHONY: build up down stop restart logs status psql reload seed load-tables load-features
 
 COMPOSE ?= docker compose
 POSTGRES_USER ?= hc_admin
 POSTGRES_DB ?= homecredit_db
-INIT_LOAD_SQL ?= /docker-entrypoint-initdb.d/02_load_tables.sql
+TABLES_SQL ?= /docker-entrypoint-initdb.d/02_load_tables.sql
+FEATURES_SQL ?= /docker-entrypoint-initdb.d/03_load_features.sql
 
 build:
 	$(COMPOSE) build
@@ -30,5 +31,10 @@ status:
 psql:
 	$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
 
-reload seed:
-	$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -f $(INIT_LOAD_SQL)
+reload seed: load-tables load-features
+
+load-tables:
+	$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -f $(TABLES_SQL)
+
+load-features:
+	$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -f $(FEATURES_SQL)

@@ -13,6 +13,6 @@ python-json-logger
 prometheus-client
 psutil
 matplotlib
-# Feast feature store integration
-feast[postgres,redis]
+# Feast feature store integration (align with Airflow + feature repo tooling)
+feast[postgres,redis]>=0.42.0
 psycopg2-binary
