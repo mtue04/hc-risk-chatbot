@@ -1,7 +1,7 @@
 """
 Data source definition for engineered features table.
 
-Points to the home_credit.features table in PostgreSQL which contains
+Points to the feature_store.features table in PostgreSQL which contains
 all 170 pre-engineered features per applicant.
 """
 
@@ -15,7 +15,7 @@ from feast.types import Float64, Int64
 # Data source pointing to materialized features table
 features_source = PostgreSQLSource(
     name="hc_features_source",
-    query="SELECT * FROM home_credit.features",
-    timestamp_field="",  # No timestamp - using latest snapshot
+    query="SELECT * FROM feature_store.features",
+    timestamp_field="event_timestamp",
     description="Engineered features from Home Credit dataset (170 features)",
 )

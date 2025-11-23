@@ -32,7 +32,9 @@ FROM base AS dependencies
 COPY requirements.txt .
 
 # Install Python packages
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "numpy==1.26.4" \
+    && pip install --no-cache-dir --use-pep517 --default-timeout=120 -r requirements.txt
 
 # ============================================
 # Stage 3: Final runtime image

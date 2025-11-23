@@ -30,7 +30,7 @@ Airflow Scheduler (triggers DAG)
 │              ↓                            │
 │  ┌────────────────────────────────────┐  │
 │  │ 3. Load (Polars + PostgreSQL)      │  │
-│  │    - Write to home_credit.features │  │
+│  │    - Write to feature_store.features │  │
 │  └────────────────────────────────────┘  │
 │              ↓                            │
 │  ┌────────────────────────────────────┐  │

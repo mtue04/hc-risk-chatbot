@@ -4,7 +4,7 @@ pydantic
 pydantic-settings
 lightgbm
 scikit-learn
-numpy
+numpy==1.26.4
 pandas
 shap
 python-multipart
@@ -12,7 +12,7 @@ joblib
 python-json-logger
 prometheus-client
 psutil
-matplotlib
+matplotlib==3.8.3
 # Feast feature store integration (align with Airflow + feature repo tooling)
 feast[postgres,redis]>=0.42.0
 psycopg2-binary

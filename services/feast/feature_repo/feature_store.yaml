@@ -6,11 +6,10 @@ offline_store:
   host: postgres
   port: 5432
   database: ${POSTGRES_DB}
-  db_schema: public
+  db_schema: feature_store
   user: ${POSTGRES_USER}
   password: ${POSTGRES_PASSWORD}
 online_store:
   type: redis
-  host: redis
-  port: 6379
+  connection_string: redis://redis:6379
 entity_key_serialization_version: 2

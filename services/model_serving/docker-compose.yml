@@ -38,9 +38,14 @@ services:
       - LOG_LEVEL=INFO
       - ENABLE_SHAP=true
       - DEFAULT_THRESHOLD=0.5
+      - FEAST_PROJECT=${FEAST_PROJECT:-hc_risk}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
     volumes:
       # Mount trained models (read-only)
-      - ./models:/app/models:ro
+      - ../models:/app/models:ro
+      # Mount Feast repo for FeatureStore access
+      - ../feast/feature_repo:/opt/feast/feature_repo:ro
     ports:
       - "8000:8000"
     healthcheck:

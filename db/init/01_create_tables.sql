@@ -1,4 +1,5 @@
 CREATE SCHEMA IF NOT EXISTS home_credit;
+CREATE SCHEMA IF NOT EXISTS feature_store;
 SET search_path TO home_credit, public;
 
 CREATE TABLE IF NOT EXISTS application_train (

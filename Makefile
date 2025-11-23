@@ -38,3 +38,8 @@ load-tables:
 
 load-features:
 	$(COMPOSE) exec postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -f $(FEATURES_SQL)
+
+
+# docker compose exec postgres \
+#   psql -U hc_admin -d homecredit_db \
+#   -c "CREATE SCHEMA IF NOT EXISTS feature_store;"

@@ -13,7 +13,7 @@ This directory contains the Feast feature store configuration for the Home Credi
 Located in `feature_repo/`:
 
 - **Entities**: `applicant` (identified by `SK_ID_CURR`)
-- **Data Sources**: `features_source` (points to `home_credit.features` table)
+- **Data Sources**: `features_source` (points to `feature_store.features` table)
 - **Feature Views**: `credit_risk_features` (all 170 model features)
 - **Feature Services**: `credit_risk_model_v1` (groups features for model inference)
 
@@ -24,7 +24,7 @@ Located in `feature_repo/`:
    docker compose up -d postgres redis
    ```
 
-2. **Features loaded** into `home_credit.features` table:
+2. **Features loaded** into `feature_store.features` table:
    ```bash
    # Run feature engineering notebook first, then:
    python scripts/load_features_to_postgres.py

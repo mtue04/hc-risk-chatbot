@@ -1,18 +1,6 @@
--- Load engineered features into a materialized table for Feast
--- This table contains all 170 engineered features per SK_ID_CURR
-
-SET search_path TO feature_store, public;
-
--- Drop existing table if it exists
-DROP TABLE IF EXISTS features CASCADE;
-
--- Create features table
--- Note: Using TEXT for initial load, then we'll convert types
 CREATE TABLE features (
     "SK_ID_CURR" DOUBLE PRECISION PRIMARY KEY,
     "TARGET" DOUBLE PRECISION,
-    -- All 170 feature columns will be created dynamically
-    -- See the COPY command below which handles column inference
     "NAME_CONTRACT_TYPE" DOUBLE PRECISION,
     "CODE_GENDER" DOUBLE PRECISION,
     "FLAG_OWN_CAR" DOUBLE PRECISION,
@@ -185,14 +173,3 @@ CREATE TABLE features (
     "INCOME_PER_YEAR_EMPLOYED" DOUBLE PRECISION,
     "event_timestamp" TIMESTAMPTZ DEFAULT NOW()
 );
-
--- Note: The actual CSV file should be placed at: /data/processed/application_train_features.csv
--- This will be loaded when the CSV is available
--- COPY command example (to be run manually when CSV exists):
--- \COPY feature_store.features FROM '/data/processed/application_train_features.csv' WITH (FORMAT CSV, HEADER TRUE, NULL '');
-
--- Create index on SK_ID_CURR for fast lookups
-CREATE INDEX idx_features_sk_id_curr ON features("SK_ID_CURR");
-
--- Add comment
-COMMENT ON TABLE features IS 'Materialized features table with all 170 engineered features for model serving via Feast';

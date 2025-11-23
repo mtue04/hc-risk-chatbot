@@ -4,12 +4,14 @@ Feature Engineering Pipeline DAG
 This DAG orchestrates the complete feature engineering pipeline:
 1. Extract raw data from PostgreSQL using Polars
 2. Engineer features using Polars transformations
-3. Load engineered features into home_credit.features table
+3. Load engineered features into feature_store.features table
 4. Materialize features to Feast online store (Redis)
 
 Schedule: Daily at 2 AM
 """
 
+import os
+import tempfile
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -18,6 +20,9 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 import polars as pl
 import pandas as pd
 import logging
+import numpy as np
+from psycopg2 import sql
+from sklearn.ensemble import IsolationForest
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,119 @@ def read_table_via_pandas(engine, query: str) -> pl.DataFrame:
     df_pandas = pd.read_sql(query, engine)
     return pl.from_pandas(df_pandas)
 
+
+def polars_dtype_to_sql(dtype: pl.datatypes.DataType) -> str:
+    """Map Polars dtype to a Postgres column type."""
+    if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64):
+        return "DOUBLE PRECISION"
+    if dtype == pl.Boolean:
+        return "BOOLEAN"
+    return "TEXT"
+
+
+def ensure_feature_table(conn, schema: list[tuple[str, pl.datatypes.DataType]]) -> bool:
+    """
+    Ensure feature_store.features matches the current dataframe schema.
+
+    Returns True if the table was recreated, False if it already matched.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'feature_store'
+              AND table_name = 'features'
+            ORDER BY ordinal_position
+            """
+        )
+        existing_columns = [row[0] for row in cur.fetchall()]
+
+    desired_columns = [name for name, _ in schema]
+
+    if existing_columns == desired_columns:
+        return False
+
+    logger.info("Recreating feature_store.features to match current schema")
+    column_definitions = sql.SQL(", ").join(
+        sql.SQL("{} {}").format(sql.Identifier(name), sql.SQL(polars_dtype_to_sql(dtype)))
+        for name, dtype in schema
+    )
+
+    with conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS feature_store.features CASCADE")
+        cur.execute(
+            sql.SQL("CREATE TABLE feature_store.features ({cols})").format(cols=column_definitions)
+        )
+        cur.execute(
+            "COMMENT ON TABLE feature_store.features IS "
+            "'Engineered feature matrix for Home Credit risk model'"
+        )
+
+    return True
+
+
+def apply_eda_cleaning(df: pl.DataFrame) -> pl.DataFrame:
+    """Replicate critical EDA cleaning steps before feature engineering."""
+    logger.info("Applying EDA cleaning transformations...")
+
+    # Replace sentinel value in DAYS_EMPLOYED
+    df = df.with_columns(
+        pl.when(pl.col("DAYS_EMPLOYED") == 365243)
+        .then(pl.lit(None))
+        .otherwise(pl.col("DAYS_EMPLOYED"))
+        .alias("DAYS_EMPLOYED")
+    )
+
+    # Derive AGE_YEARS from DAYS_BIRTH
+    df = df.with_columns((-pl.col("DAYS_BIRTH") / 365).alias("AGE_YEARS"))
+
+    # Cap financial features at 1st/99th percentiles
+    financial_features = ["AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY", "AMT_GOODS_PRICE"]
+    quantiles = df.select(
+        [pl.col(col).quantile(0.01).alias(f"{col}_p01") for col in financial_features]
+        + [pl.col(col).quantile(0.99).alias(f"{col}_p99") for col in financial_features]
+    )
+    lower_bounds = {col: quantiles[f"{col}_p01"][0] for col in financial_features}
+    upper_bounds = {col: quantiles[f"{col}_p99"][0] for col in financial_features}
+
+    df = df.with_columns(
+        [
+            pl.col(col).clip(lower_bounds[col], upper_bounds[col]).alias(col)
+            for col in financial_features
+        ]
+    )
+
+    # Isolation Forest-based outlier detection
+    features_for_iso = [
+        "AMT_INCOME_TOTAL",
+        "AMT_CREDIT",
+        "AMT_ANNUITY",
+        "AGE_YEARS",
+        "EXT_SOURCE_1",
+        "EXT_SOURCE_2",
+        "EXT_SOURCE_3",
+    ]
+    iso_input = df.select(features_for_iso).to_pandas()
+    iso_input = iso_input.fillna(iso_input.median())
+
+    iso_forest = IsolationForest(
+        contamination=0.05,
+        random_state=42,
+        n_jobs=-1,
+    )
+    labels = iso_forest.fit_predict(iso_input)
+    scores = iso_forest.score_samples(iso_input)
+
+    df = df.with_columns(
+        [
+            pl.Series("outlier_label", labels),
+            pl.Series("outlier_score", scores),
+        ]
+    )
+
+    logger.info("EDA cleaning complete")
+    return df
 
 # DAG default arguments
 default_args = {
@@ -71,7 +189,6 @@ def extract_raw_data(**context):
     logger.info(f"Extracted application_train: {df_app.shape}")
 
     # Store connection string for later use
-    import tempfile
     temp_dir = tempfile.mkdtemp()
 
     app_path = f"{temp_dir}/application.parquet"
@@ -100,6 +217,9 @@ def engineer_features(**context):
     # Load base application table
     df = pl.read_parquet(data['app_path'])
     logger.info(f"Loaded application data: {df.shape}")
+
+    # Apply cleaning derived from EDA notebooks
+    df = apply_eda_cleaning(df)
 
     # Get Postgres connection for on-demand table loading
     pg_hook = PostgresHook(postgres_conn_id='postgres_homecredit')
@@ -211,8 +331,12 @@ def engineer_features(**context):
         AVG("AMT_APPLICATION") AS "PREV_AMT_APPLICATION_MEAN",
         MAX("AMT_APPLICATION") AS "PREV_AMT_APPLICATION_MAX",
         SUM("AMT_APPLICATION") AS "PREV_AMT_APPLICATION_SUM",
+        AVG("AMT_DOWN_PAYMENT") AS "PREV_AMT_DOWN_PAYMENT_MEAN",
+        MAX("AMT_DOWN_PAYMENT") AS "PREV_AMT_DOWN_PAYMENT_MAX",
         AVG("AMT_GOODS_PRICE") AS "PREV_AMT_GOODS_PRICE_MEAN",
         AVG("HOUR_APPR_PROCESS_START") AS "PREV_HOUR_APPR_PROCESS_START_MEAN",
+        AVG("RATE_DOWN_PAYMENT") AS "PREV_RATE_DOWN_PAYMENT_MEAN",
+        MAX("RATE_DOWN_PAYMENT") AS "PREV_RATE_DOWN_PAYMENT_MAX",
         AVG("DAYS_DECISION") AS "PREV_DAYS_DECISION_MEAN",
         MIN("DAYS_DECISION") AS "PREV_DAYS_DECISION_MIN",
         AVG("CNT_PAYMENT") AS "PREV_CNT_PAYMENT_MEAN",
@@ -233,6 +357,39 @@ def engineer_features(**context):
     df = df.join(prev_agg, on="SK_ID_CURR", how="left")
     del prev_agg  # Free memory
     logger.info("Previous application features complete, memory freed")
+
+    # Additional previous application sequence-based features
+    logger.info("Computing previous application sequence features...")
+    prev_sequence_query = """
+    WITH ranked AS (
+        SELECT
+            "SK_ID_CURR",
+            "AMT_CREDIT",
+            "AMT_ANNUITY",
+            "DAYS_DECISION",
+            CASE WHEN "NAME_CONTRACT_STATUS" = 'Approved' THEN 1 ELSE 0 END AS approval_flag,
+            ROW_NUMBER() OVER (PARTITION BY "SK_ID_CURR" ORDER BY "DAYS_DECISION" DESC) AS rn_desc,
+            ROW_NUMBER() OVER (PARTITION BY "SK_ID_CURR" ORDER BY "DAYS_DECISION" ASC) AS rn_asc
+        FROM home_credit.previous_application
+    )
+    SELECT
+        "SK_ID_CURR",
+        AVG(CASE WHEN rn_desc <= 3 THEN "AMT_CREDIT" END) AS "PREV_LAST3_AMT_CREDIT",
+        AVG(CASE WHEN rn_desc <= 3 THEN "AMT_ANNUITY" END) AS "PREV_LAST3_AMT_ANNUITY",
+        AVG(CASE WHEN rn_desc <= 3 THEN "DAYS_DECISION" END) AS "PREV_LAST3_DAYS_DECISION",
+        AVG(CASE WHEN rn_desc <= 3 THEN approval_flag END)::FLOAT AS "PREV_LAST3_APPROVAL_RATE",
+        AVG(CASE WHEN rn_desc <= 5 THEN "AMT_ANNUITY" END) AS "PREV_LAST5_AMT_ANNUITY",
+        AVG(CASE WHEN rn_asc <= 2 THEN "AMT_CREDIT" END) AS "PREV_FIRST2_AMT_CREDIT",
+        AVG(CASE WHEN rn_asc <= 2 THEN "DAYS_DECISION" END) AS "PREV_FIRST2_DAYS_DECISION",
+        AVG(CASE WHEN rn_asc <= 4 THEN "AMT_CREDIT" END) AS "PREV_FIRST4_AMT_CREDIT"
+    FROM ranked
+    GROUP BY "SK_ID_CURR"
+    """
+    prev_sequence = read_table_via_pandas(engine, prev_sequence_query)
+    prev_sequence = prev_sequence.with_columns(pl.col("SK_ID_CURR").cast(pl.Int64))
+    df = df.join(prev_sequence, on="SK_ID_CURR", how="left")
+    del prev_sequence
+    logger.info("Previous application sequence features complete, memory freed")
 
     # 6. POS cash balance aggregations via SQL
     logger.info("Aggregating pos_cash_balance table via SQL...")
@@ -284,10 +441,28 @@ def engineer_features(**context):
     del inst_agg  # Free memory
     logger.info("Installments features complete, memory freed")
 
+    # 8. Past due severity features (derived from installments_payments)
+    logger.info("Computing past due severity features...")
+    past_due_query = """
+    SELECT
+        "SK_ID_CURR",
+        AVG(GREATEST("DAYS_ENTRY_PAYMENT" - "DAYS_INSTALMENT", 0)) AS "PAST_DUE_DAYS_PAST_DUE_MEAN",
+        SUM(GREATEST("DAYS_ENTRY_PAYMENT" - "DAYS_INSTALMENT", 0)) AS "PAST_DUE_DAYS_PAST_DUE_SUM",
+        STDDEV_POP(CASE WHEN "AMT_INSTALMENT" > 0 THEN "AMT_PAYMENT" / NULLIF("AMT_INSTALMENT", 0) END) AS "PAST_DUE_PAYMENT_RATIO_STD",
+        AVG(CASE WHEN "DAYS_ENTRY_PAYMENT" > "DAYS_INSTALMENT" THEN ("DAYS_ENTRY_PAYMENT" - "DAYS_INSTALMENT") ELSE 0 END) AS "PAST_DUE_SEVERITY"
+    FROM home_credit.installments_payments
+    GROUP BY "SK_ID_CURR"
+    """
+    past_due_agg = read_table_via_pandas(engine, past_due_query)
+    past_due_agg = past_due_agg.with_columns(pl.col("SK_ID_CURR").cast(pl.Int64))
+    df = df.join(past_due_agg, on="SK_ID_CURR", how="left")
+    del past_due_agg
+    logger.info("Past due features complete, memory freed")
+
     # Close database connection
     engine.dispose()
 
-    # 8. Advanced financial features
+    # 9. Advanced financial features
     logger.info("Creating advanced financial features...")
     df = df.with_columns([
         (pl.col("AMT_CREDIT") / (pl.col("EXT_SOURCE_3") + 0.00001)).alias("AMT_CREDIT_div_EXT_SOURCE_3"),
@@ -311,9 +486,13 @@ def engineer_features(**context):
         (pl.col("ESTIMATED_INTEREST_RATE") / ((pl.col("PREV_CNT_PAYMENT_MEAN") / 12) + 0.001)).alias("ESTIMATED_YEARLY_RATE"),
     ])
 
+    # Placeholder for KNN-based feature (to be replaced with actual computation)
+    if "KNN_TARGET_MEAN_500" not in df.columns:
+        df = df.with_columns(pl.lit(0.0).alias("KNN_TARGET_MEAN_500"))
+
     # Fill nulls with 0 for aggregated features (no history)
     logger.info("Filling null values...")
-    agg_cols = [col for col in df.columns if any(x in col for x in ['BUREAU', 'PREV', 'POS', 'INST'])]
+    agg_cols = [col for col in df.columns if any(x in col for x in ['BUREAU', 'PREV', 'POS', 'INST', 'PAST'])]
     df = df.with_columns([
         pl.col(col).fill_null(0) for col in agg_cols
     ])
@@ -332,7 +511,9 @@ def engineer_features(**context):
     logger.info(f"Final engineered features shape: {df.shape}")
 
     # Save to parquet
-    import tempfile
+    event_ts = datetime.utcnow()
+    df = df.with_columns(pl.lit(event_ts).alias("event_timestamp"))
+
     output_path = f"{tempfile.gettempdir()}/engineered_features.parquet"
     df.write_parquet(output_path)
 
@@ -343,7 +524,7 @@ def engineer_features(**context):
 
 def load_features_to_postgres(**context):
     """
-    Load engineered features into home_credit.features table.
+    Load engineered features into feature_store.features table.
     """
     logger.info("Loading features to PostgreSQL")
 
@@ -353,26 +534,70 @@ def load_features_to_postgres(**context):
 
     # Read engineered features
     df = pl.read_parquet(features_path)
-
     logger.info(f"Loading {df.shape[0]:,} rows with {df.shape[1]} columns")
 
-    # Get Postgres connection
+    schema = list(zip(df.columns, df.dtypes))
+    columns = df.columns
+
+    # Export to temporary CSV for efficient COPY
+    tmp_csv = tempfile.NamedTemporaryFile(mode="w+", suffix=".csv", delete=False)
+    tmp_csv_path = tmp_csv.name
+    tmp_csv.close()
+
+    logger.info(f"Writing temporary CSV to {tmp_csv_path}")
+    if "event_timestamp" in df.columns:
+        df_csv = df.with_columns(
+            pl.col("event_timestamp")
+            .dt.replace_time_zone("UTC")
+            .dt.strftime("%Y-%m-%d %H:%M:%S%z")
+            .alias("event_timestamp")
+        )
+    else:
+        df_csv = df
+    df_csv.write_csv(tmp_csv_path)
+
     pg_hook = PostgresHook(postgres_conn_id='postgres_homecredit')
-    engine = pg_hook.get_sqlalchemy_engine()
+    conn = pg_hook.get_conn()
+    conn.autocommit = False
 
-    # Create table if not exists and load data
-    # Using Polars write_database (efficient bulk insert)
-    df.write_database(
-        table_name='features',
-        connection=engine,
-        if_table_exists='replace',
-        engine='sqlalchemy'
-    )
+    try:
+        recreated = ensure_feature_table(conn, schema)
 
-    logger.info(f"✓ Loaded {df.shape[0]:,} rows to home_credit.features")
+        with conn.cursor() as cur:
+            logger.info("Truncating feature_store.features")
+            cur.execute("TRUNCATE TABLE feature_store.features")
+
+            copy_sql = sql.SQL("COPY feature_store.features ({fields}) FROM STDIN WITH CSV HEADER").format(
+                fields=sql.SQL(", ").join(sql.Identifier(col) for col in columns)
+            )
+
+            logger.info("Copying data into PostgreSQL via COPY ...")
+            with open(tmp_csv_path, "r", encoding="utf-8") as csv_file:
+                cur.copy_expert(copy_sql.as_string(cur), csv_file)
+
+            # Ensure event_timestamp column uses timestamptz type
+            cur.execute(
+                """
+                ALTER TABLE feature_store.features
+                ALTER COLUMN event_timestamp
+                TYPE timestamptz
+                USING event_timestamp::timestamptz
+                """
+            )
+
+        conn.commit()
+        logger.info(f"✓ Loaded {df.shape[0]:,} rows to feature_store.features")
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+        if os.path.exists(tmp_csv_path):
+            os.remove(tmp_csv_path)
+            logger.info("Temporary CSV removed")
 
     # Verify
-    verify_query = "SELECT COUNT(*) as count FROM home_credit.features"
+    verify_query = "SELECT COUNT(*) as count FROM feature_store.features"
     result = pg_hook.get_first(verify_query)
     logger.info(f"✓ Verified: {result[0]:,} rows in features table")
 
