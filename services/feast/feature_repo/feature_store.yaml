@@ -11,5 +11,5 @@ offline_store:
   password: ${POSTGRES_PASSWORD}
 online_store:
   type: redis
-  connection_string: redis://redis:6379
+  connection_string: redis:6379
 entity_key_serialization_version: 2

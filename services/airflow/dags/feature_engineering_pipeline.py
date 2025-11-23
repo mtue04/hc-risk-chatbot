@@ -26,6 +26,44 @@ from sklearn.ensemble import IsolationForest
 
 logger = logging.getLogger(__name__)
 
+CATEGORICAL_COLUMNS = [
+    "NAME_CONTRACT_TYPE",
+    "CODE_GENDER",
+    "FLAG_OWN_CAR",
+    "FLAG_OWN_REALTY",
+    "NAME_TYPE_SUITE",
+    "NAME_INCOME_TYPE",
+    "NAME_EDUCATION_TYPE",
+    "NAME_FAMILY_STATUS",
+    "NAME_HOUSING_TYPE",
+    "OCCUPATION_TYPE",
+    "WEEKDAY_APPR_PROCESS_START",
+    "ORGANIZATION_TYPE",
+    "FONDKAPREMONT_MODE",
+    "HOUSETYPE_MODE",
+    "WALLSMATERIAL_MODE",
+    "EMERGENCYSTATE_MODE",
+]
+
+
+def encode_categorical_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Label encode all known categorical columns so downstream Feast schemas remain numeric."""
+    present_cols = [col for col in CATEGORICAL_COLUMNS if col in df.columns]
+    if not present_cols:
+        return df
+
+    logger.info("Encoding %d categorical columns to numeric codes", len(present_cols))
+    return df.with_columns([
+        pl.col(col)
+        .cast(pl.Utf8)
+        .fill_null("missing")
+        .cast(pl.Categorical)
+        .to_physical()
+        .cast(pl.Float64)
+        .alias(col)
+        for col in present_cols
+    ])
+
 
 def read_table_via_pandas(engine, query: str) -> pl.DataFrame:
     """Read table using pandas as intermediary to avoid Polars schema inference issues."""
@@ -51,16 +89,18 @@ def ensure_feature_table(conn, schema: list[tuple[str, pl.datatypes.DataType]]) 
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT column_name
+            SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = 'feature_store'
               AND table_name = 'features'
             ORDER BY ordinal_position
             """
         )
-        existing_columns = [row[0] for row in cur.fetchall()]
+        existing_columns = [(row[0], row[1]) for row in cur.fetchall()]
 
-    desired_columns = [name for name, _ in schema]
+    desired_columns = [
+        (name, polars_dtype_to_sql(dtype).lower()) for name, dtype in schema
+    ]
 
     if existing_columns == desired_columns:
         return False
@@ -220,6 +260,9 @@ def engineer_features(**context):
 
     # Apply cleaning derived from EDA notebooks
     df = apply_eda_cleaning(df)
+
+    # Encode string categoricals once up-front so schema matches Feast expectations
+    df = encode_categorical_columns(df)
 
     # Get Postgres connection for on-demand table loading
     pg_hook = PostgresHook(postgres_conn_id='postgres_homecredit')
@@ -490,6 +533,9 @@ def engineer_features(**context):
     if "KNN_TARGET_MEAN_500" not in df.columns:
         df = df.with_columns(pl.lit(0.0).alias("KNN_TARGET_MEAN_500"))
 
+    # Final safety: ensure any reintroduced categoricals are encoded before persistence
+    df = encode_categorical_columns(df)
+
     # Fill nulls with 0 for aggregated features (no history)
     logger.info("Filling null values...")
     agg_cols = [col for col in df.columns if any(x in col for x in ['BUREAU', 'PREV', 'POS', 'INST', 'PAST'])]
@@ -629,7 +675,7 @@ task_feast_apply = BashOperator(
 
 task_feast_materialize = BashOperator(
     task_id='feast_materialize',
-    bash_command='cd /opt/feast/feature_repo && feast materialize-incremental $(date +%Y-%m-%d)',
+    bash_command='cd /opt/feast/feature_repo && feast materialize-incremental "$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     dag=dag,
 )
 
