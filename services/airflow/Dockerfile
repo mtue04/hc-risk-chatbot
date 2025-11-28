@@ -25,3 +25,7 @@ RUN pip install --no-cache-dir \
 # Set environment variables
 ENV AIRFLOW_VERSION=3.0.1
 ENV PYTHON_VERSION=3.12
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
+    CMD curl -f http://localhost:8080/api/v2/monitor/health || exit 1

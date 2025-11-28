@@ -1,103 +1,181 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
-import httpx
 import structlog
 from fastapi import FastAPI, HTTPException
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
+from .graph import get_chatbot_graph
 
 logger = structlog.get_logger()
 
-app = FastAPI(title="HC Risk Chatbot", version="0.1.0")
+app = FastAPI(
+    title="HC Risk Chatbot",
+    version="0.2.0",
+    description="LangGraph-powered conversational credit risk analysis",
+)
 
-MODEL_API_URL = os.getenv("FASTAPI_ENDPOINT", "http://model-serving:8000")
-MODEL_PREDICT_ROUTE = f"{MODEL_API_URL}/predict"
-MODEL_EXPLAIN_ROUTE = f"{MODEL_API_URL}/explain"
+# In-memory conversation storage (replace with Redis/DB in production)
+_conversations: Dict[str, List[Dict[str, Any]]] = {}
 
 
 class ChatRequest(BaseModel):
     question: str = Field(..., description="Natural language user question.")
-    inferred_features: Dict[str, float] = Field(
-        default_factory=dict,
-        description="Optional feature overrides supplied by the UI or prior tool calls.",
+    session_id: Optional[str] = Field(
+        None,
+        description="Session ID for conversation continuity. Auto-generated if not provided.",
     )
-    session_id: Optional[str] = None
+    applicant_id: Optional[int] = Field(
+        None,
+        description="Applicant ID (SK_ID_CURR) to focus the conversation on.",
+    )
 
 
 class ChatResponse(BaseModel):
     answer: str
+    session_id: str
+    applicant_id: Optional[int] = None
     risk_probability: Optional[float] = None
-    explanation: Optional[Dict[str, float]] = None
-    notes: Optional[str] = None
+    tool_outputs: Optional[List[Dict[str, Any]]] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None
 
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
-
-
-async def _call_model(features: Dict[str, float]) -> Dict[str, float]:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            prediction = await client.post(MODEL_PREDICT_ROUTE, json={"features": features})
-            prediction.raise_for_status()
-            explain = await client.post(MODEL_EXPLAIN_ROUTE, json={"features": features})
-            explain.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.warning("model_call_failed", error=str(exc))
-            raise HTTPException(status_code=502, detail="Model service unavailable")
-
+    """Health check endpoint."""
     return {
-        "probability": prediction.json().get("probability"),
-        "explanation": explain.json(),
+        "status": "ok",
+        "version": "0.2.0",
+        "langgraph_enabled": True,
+        "gemini_configured": os.getenv("GEMINI_API_KEY", "changeme") != "changeme",
     }
-
-
-def _compose_answer(question: str, probability: Optional[float], explanation: Optional[Dict]) -> str:
-    if probability is None:
-        return (
-            "I could not reach the credit risk model right now, but I recorded your question: "
-            f"'{question}'. Please retry after the services are healthy."
-        )
-
-    base = (
-        f"The current estimated default probability is {probability:.2%}. "
-        "This score is derived from the engineered features stored in the feature "
-        "repository and scored by the credit risk model."
-    )
-
-    if explanation and isinstance(explanation, dict) and explanation.get("contributions"):
-        top_features = list(explanation["contributions"].items())[:3]
-        extra = ", ".join(f"{name} ({value:+.2f})" for name, value in top_features)
-        base += f" Key contributors: {extra}."
-
-    return base
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    logger.info("chat_request", session=request.session_id, question=request.question)
+    """
+    Chat endpoint with LangGraph integration.
+
+    Supports conversational analysis using Gemini and tool calling for:
+    - Risk predictions
+    - Applicant data queries
+    - Feature visualizations
+    """
+    # Generate or use existing session ID
+    session_id = request.session_id or str(uuid4())
+
+    logger.info(
+        "chat_request",
+        session=session_id,
+        question=request.question,
+        has_applicant_id=request.applicant_id is not None,
+    )
+
+    # Get conversation history
+    conversation_history = _conversations.get(session_id, [])
+
+    # Create human message
+    human_message = HumanMessage(content=request.question)
+
+    # Build initial state
+    initial_state = {
+        "messages": conversation_history + [human_message],
+        "session_id": session_id,
+        "applicant_id": request.applicant_id,
+        "risk_score": None,
+        "last_tool_output": None,
+    }
+
     try:
-        model_payload = await _call_model(request.inferred_features)
-        probability = model_payload.get("probability")
-        explanation = model_payload.get("explanation")
-    except HTTPException:
-        probability = None
-        explanation = None
+        # Get chatbot graph
+        graph = get_chatbot_graph()
 
-    answer = _compose_answer(request.question, probability, explanation)
-    notes = (
-        "LLM integration pending. The current response is stitched together without Gemini outputs."
-        if os.getenv("GEMINI_API_KEY", "changeme") == "changeme"
-        else None
-    )
+        # Invoke the graph
+        result = graph.invoke(initial_state)
 
-    return ChatResponse(
-        answer=answer,
-        risk_probability=probability,
-        explanation=explanation,
-        notes=notes,
-    )
+        # Extract messages
+        messages = result["messages"]
+        
+        # Update conversation history
+        _conversations[session_id] = messages
+
+        # Get the last AI message
+        ai_messages = [msg for msg in messages if isinstance(msg, AIMessage)]
+        if not ai_messages:
+            raise HTTPException(
+                status_code=500,
+                detail="No response generated from chatbot"
+            )
+
+        last_ai_message = ai_messages[-1]
+        answer = last_ai_message.content
+
+        # Extract tool outputs if any
+        tool_outputs = []
+        for msg in reversed(messages):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                tool_outputs.extend(msg.tool_calls)
+
+        # Try to extract risk score from tool outputs or state
+        risk_probability = result.get("risk_score")
+
+        # Format conversation history for response
+        formatted_history = [
+            {"role": "human" if isinstance(msg, HumanMessage) else "ai", "content": msg.content}
+            for msg in messages
+        ]
+
+        logger.info(
+            "chat_response_generated",
+            session=session_id,
+            num_messages=len(messages),
+            has_tool_calls=len(tool_outputs) > 0,
+        )
+
+        return ChatResponse(
+            answer=answer,
+            session_id=session_id,
+            applicant_id=result.get("applicant_id"),
+            risk_probability=risk_probability,
+            tool_outputs=tool_outputs if tool_outputs else None,
+            conversation_history=formatted_history[-6:],  # Last 3 turns
+        )
+
+    except Exception as exc:
+        logger.error("chat_processing_error", error=str(exc), session=session_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing chat request: {str(exc)}"
+        )
+
+
+@app.delete("/chat/{session_id}")
+def clear_conversation(session_id: str):
+    """Clear conversation history for a session."""
+    if session_id in _conversations:
+        del _conversations[session_id]
+        return {"status": "cleared", "session_id": session_id}
+    return {"status": "not_found", "session_id": session_id}
+
+
+@app.get("/chat/{session_id}/history")
+def get_conversation_history(session_id: str):
+    """Get conversation history for a session."""
+    if session_id not in _conversations:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    messages = _conversations[session_id]
+    formatted = [
+        {
+            "role": "human" if isinstance(msg, HumanMessage) else "ai",
+            "content": msg.content,
+            "timestamp": getattr(msg, "timestamp", None),
+        }
+        for msg in messages
+    ]
+
+    return {"session_id": session_id, "messages": formatted}

@@ -279,6 +279,47 @@ def predict_applicant(payload: ApplicantRequest):
     return predict(feature_vector)
 
 
+@app.get("/predict/applicant/{applicant_id}", response_model=PredictionOutput)
+def predict_applicant_get(applicant_id: int):
+    """
+    GET version of predict_applicant - same functionality but via path parameter.
+    """
+    return predict_applicant(ApplicantRequest(applicant_id=applicant_id))
+
+
+@app.get("/explain/applicant/{applicant_id}")
+def explain_applicant_get(applicant_id: int):
+    """
+    GET SHAP explanation for an applicant using Feast feature store.
+    """
+    if not FEAST_ENABLED or feast_client is None or not feast_client.is_available():
+        # Return stub explanation when Feast not available
+        return {
+            "message": "Feast feature store not available. Returning stub explanation.",
+            "contributions": {},
+            "applicant_id": applicant_id,
+        }
+
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Fetch features from Feast
+    features_dict = feast_client.get_features(applicant_id)
+
+    if features_dict is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Features not found for applicant {applicant_id}"
+        )
+
+    # Return explanation (stub for now since SHAP not fully implemented)
+    return {
+        "applicant_id": applicant_id,
+        "contributions": features_dict,  # Using features as stub contributions
+        "message": "SHAP explanation not fully implemented. Showing feature values.",
+    }
+
+
 @app.post("/predict/applicant/batch")
 def predict_applicant_batch(payload: BatchApplicantRequest):
     """

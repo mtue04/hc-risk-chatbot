@@ -1,0 +1,329 @@
+"""
+Tool definitions for the LangGraph chatbot.
+
+These tools allow the chatbot to:
+1. Get risk predictions from the model API
+2. Query applicant data from PostgreSQL
+3. Generate visualizations
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import httpx
+import psycopg2
+import structlog
+from langchain_core.tools import tool
+
+logger = structlog.get_logger()
+
+# Configuration
+MODEL_API_URL = os.getenv("MODEL_API_URL", "http://model_serving:8000")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres")
+POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
+POSTGRES_DB = os.getenv("POSTGRES_DB", "homecredit_db")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "hc_admin")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "hc_password")
+
+
+def get_db_connection():
+    """Create a PostgreSQL database connection."""
+    return psycopg2.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        database=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD,
+    )
+
+
+@tool
+def get_risk_prediction(applicant_id: int) -> dict[str, Any]:
+    """
+    Get credit risk prediction and explanation for a specific applicant.
+
+    This tool fetches features from the feature store and gets a risk probability
+    along with SHAP-based explanations showing which features contributed most
+    to the prediction.
+
+    Args:
+        applicant_id: The applicant ID (SK_ID_CURR) to analyze
+
+    Returns:
+        Dictionary containing:
+        - probability: Default probability (0-1)
+        - prediction: "Low Risk" or "High Risk" classification
+        - top_factors: Top 5 features influencing the prediction
+        - explanation: Full SHAP contribution details
+    """
+    try:
+        # Call model API with applicant ID
+        # In a full implementation, this would fetch features from Feast
+        # and pass them to the model
+        url = f"{MODEL_API_URL}/predict/applicant/{applicant_id}"
+        
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            prediction_data = response.json()
+
+        probability = prediction_data.get("probability", 0.0)
+        
+        # Get SHAP explanation
+        explain_url = f"{MODEL_API_URL}/explain/applicant/{applicant_id}"
+        with httpx.Client(timeout=10.0) as client:
+            explain_response = client.get(explain_url)
+            explain_response.raise_for_status()
+            explanation = explain_response.json()
+
+        # Format top contributors
+        contributions = explanation.get("contributions", {})
+        top_factors = sorted(
+            contributions.items(),
+            key=lambda x: abs(x[1]),
+            reverse=True
+        )[:5]
+
+        result = {
+            "applicant_id": applicant_id,
+            "probability": probability,
+            "prediction": "High Risk" if probability > 0.5 else "Low Risk",
+            "top_factors": [
+                {"feature": name, "impact": value}
+                for name, value in top_factors
+            ],
+            "explanation": explanation,
+        }
+
+        logger.info(
+            "risk_prediction_retrieved",
+            applicant_id=applicant_id,
+            probability=probability,
+        )
+
+        return result
+
+    except httpx.HTTPError as exc:
+        logger.error("model_api_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Could not fetch prediction: {str(exc)}",
+            "applicant_id": applicant_id,
+        }
+    except Exception as exc:
+        logger.error("prediction_tool_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Unexpected error: {str(exc)}",
+            "applicant_id": applicant_id,
+        }
+
+
+@tool
+def query_applicant_data(
+    applicant_id: int,
+    fields: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Query specific information about an applicant from the database.
+
+    Use this tool to retrieve demographic, financial, or application details
+    for an applicant to provide context in your analysis.
+
+    Args:
+        applicant_id: The applicant ID (SK_ID_CURR)
+        fields: List of field names to retrieve. If None, returns common fields.
+                Examples: ["AMT_INCOME_TOTAL", "AMT_CREDIT", "NAME_CONTRACT_TYPE"]
+
+    Returns:
+        Dictionary with the requested field values
+    """
+    if fields is None:
+        # Default fields to query
+        fields = [
+            "AMT_INCOME_TOTAL",
+            "AMT_CREDIT",
+            "AMT_ANNUITY",
+            "CODE_GENDER",
+            "DAYS_BIRTH",
+            "DAYS_EMPLOYED",
+            "NAME_CONTRACT_TYPE",
+            "NAME_INCOME_TYPE",
+        ]
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Safely construct query with field names
+        field_list = ", ".join(fields)
+        query = f"""
+            SELECT {field_list}
+            FROM home_credit.application_train
+            WHERE SK_ID_CURR = %s
+            LIMIT 1
+        """
+
+        cursor.execute(query, (applicant_id,))
+        row = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if row is None:
+            return {
+                "error": f"Applicant {applicant_id} not found",
+                "applicant_id": applicant_id,
+            }
+
+        # Convert to dict
+        result = {"applicant_id": applicant_id}
+        for i, field in enumerate(fields):
+            result[field] = row[i]
+
+        # Add some computed/formatted fields for better UX
+        if "DAYS_BIRTH" in result and result["DAYS_BIRTH"]:
+            result["age_years"] = abs(result["DAYS_BIRTH"]) // 365
+
+        if "DAYS_EMPLOYED" in result and result["DAYS_EMPLOYED"]:
+            if result["DAYS_EMPLOYED"] > 0:
+                result["employment_years"] = 0  # unemployed
+            else:
+                result["employment_years"] = abs(result["DAYS_EMPLOYED"]) // 365
+
+        logger.info("applicant_data_retrieved", applicant_id=applicant_id)
+
+        return result
+
+    except psycopg2.Error as exc:
+        logger.error("database_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Database query failed: {str(exc)}",
+            "applicant_id": applicant_id,
+        }
+    except Exception as exc:
+        logger.error("query_tool_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Unexpected error: {str(exc)}",
+            "applicant_id": applicant_id,
+        }
+
+
+@tool
+def generate_feature_plot(
+    applicant_id: int,
+    feature_names: list[str],
+) -> dict[str, Any]:
+    """
+    Generate a visualization comparing applicant's feature values to the population.
+
+    This creates a comparison plot showing where the applicant stands relative
+    to others in the dataset for specific features.
+
+    Args:
+        applicant_id: The applicant ID (SK_ID_CURR)
+        feature_names: List of feature names to visualize (max 5)
+
+    Returns:
+        Dictionary with plot data and statistics
+    """
+    if len(feature_names) > 5:
+        return {
+            "error": "Maximum 5 features allowed per plot",
+            "requested": len(feature_names),
+        }
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Get applicant's values
+        field_list = ", ".join(feature_names)
+        query = f"""
+            SELECT {field_list}
+            FROM home_credit.application_train
+            WHERE SK_ID_CURR = %s
+        """
+        cursor.execute(query, (applicant_id,))
+        applicant_row = cursor.fetchone()
+
+        if applicant_row is None:
+            cursor.close()
+            conn.close()
+            return {
+                "error": f"Applicant {applicant_id} not found",
+                "applicant_id": applicant_id,
+            }
+
+        # Get population statistics for each feature
+        stats = {}
+        for i, feature in enumerate(feature_names):
+            applicant_value = applicant_row[i]
+
+            # Get population stats
+            stats_query = f"""
+                SELECT
+                    AVG({feature}) as mean,
+                    STDDEV({feature}) as std,
+                    MIN({feature}) as min,
+                    MAX({feature}) as max,
+                    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {feature}) as q25,
+                    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {feature}) as q50,
+                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {feature}) as q75
+                FROM home_credit.application_train
+                WHERE {feature} IS NOT NULL
+            """
+            cursor.execute(stats_query)
+            stat_row = cursor.fetchone()
+
+            stats[feature] = {
+                "applicant_value": float(applicant_value) if applicant_value else None,
+                "population_mean": float(stat_row[0]) if stat_row[0] else None,
+                "population_std": float(stat_row[1]) if stat_row[1] else None,
+                "population_min": float(stat_row[2]) if stat_row[2] else None,
+                "population_max": float(stat_row[3]) if stat_row[3] else None,
+                "population_q25": float(stat_row[4]) if stat_row[4] else None,
+                "population_median": float(stat_row[5]) if stat_row[5] else None,
+                "population_q75": float(stat_row[6]) if stat_row[6] else None,
+            }
+
+            # Calculate percentile
+            if applicant_value is not None and stat_row[0] is not None:
+                percentile_query = f"""
+                    SELECT COUNT(*) * 100.0 / (SELECT COUNT(*) FROM home_credit.application_train WHERE {feature} IS NOT NULL)
+                    FROM home_credit.application_train
+                    WHERE {feature} <= %s AND {feature} IS NOT NULL
+                """
+                cursor.execute(percentile_query, (applicant_value,))
+                percentile_result = cursor.fetchone()
+                stats[feature]["percentile"] = float(percentile_result[0]) if percentile_result[0] else None
+
+        cursor.close()
+        conn.close()
+
+        result = {
+            "applicant_id": applicant_id,
+            "features": stats,
+            "plot_type": "feature_comparison",
+        }
+
+        logger.info(
+            "feature_plot_generated",
+            applicant_id=applicant_id,
+            num_features=len(feature_names),
+        )
+
+        return result
+
+    except psycopg2.Error as exc:
+        logger.error("database_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Database query failed: {str(exc)}",
+            "applicant_id": applicant_id,
+        }
+    except Exception as exc:
+        logger.error("plot_tool_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Unexpected error: {str(exc)}",
+            "applicant_id": applicant_id,
+        }

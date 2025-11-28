@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     libgomp1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app user (security best practice)
@@ -29,7 +30,7 @@ WORKDIR /app
 FROM base AS dependencies
 
 # Copy requirements
-COPY requirements.txt .
+COPY services/model_serving/requirements.txt .
 
 # Install Python packages
 RUN pip install --no-cache-dir --upgrade pip \
@@ -45,12 +46,14 @@ FROM base AS runtime
 COPY --from=dependencies /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=dependencies /usr/local/bin /usr/local/bin
 
-# Copy application code
-COPY app/ /app/app/
+# Copy application code (from root context now)
+COPY services/model_serving/app/ /app/app/
 
-# Create directories for models
-RUN mkdir -p /app/models/tuned && \
-    chown -R appuser:appuser /app
+# Copy model files into image (Windows volume mount workaround)
+COPY models /app/models
+
+# Set permissions
+RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
@@ -60,7 +63,7 @@ EXPOSE 8000
 
 # Health check (using Python since requests is in requirements)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Run FastAPI with uvicorn
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
