@@ -50,12 +50,14 @@ def create_chatbot_graph():
     """
     # Initialize Gemini LLM
     gemini_api_key = os.getenv("GEMINI_API_KEY")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")  # flash has higher rate limits
     if not gemini_api_key or gemini_api_key == "changeme":
         logger.warning("GEMINI_API_KEY not configured, using mock responses")
         llm = None
     else:
+        logger.info(f"Initializing Gemini LLM with model: {gemini_model}")
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-pro",
+            model=gemini_model,
             google_api_key=gemini_api_key,
             temperature=0.7,
             convert_system_message_to_human=True,

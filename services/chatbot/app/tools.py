@@ -151,16 +151,19 @@ def query_applicant_data(
             "NAME_INCOME_TYPE",
         ]
 
+    # Convert field names to uppercase and quote them (PostgreSQL columns are uppercase)
+    fields = [f.upper() for f in fields]
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Safely construct query with field names
-        field_list = ", ".join(fields)
+        # Safely construct query with quoted field names (PostgreSQL requires quotes for uppercase)
+        field_list = ", ".join(f'"{f}"' for f in fields)
         query = f"""
             SELECT {field_list}
             FROM home_credit.application_train
-            WHERE SK_ID_CURR = %s
+            WHERE "SK_ID_CURR" = %s
             LIMIT 1
         """
 
@@ -223,6 +226,7 @@ def generate_feature_plot(
     Args:
         applicant_id: The applicant ID (SK_ID_CURR)
         feature_names: List of feature names to visualize (max 5)
+                      Feature names are case-insensitive (will be converted to uppercase)
 
     Returns:
         Dictionary with plot data and statistics
@@ -233,16 +237,19 @@ def generate_feature_plot(
             "requested": len(feature_names),
         }
 
+    # Convert feature names to uppercase and prepare quoted versions for SQL
+    feature_names = [f.upper() for f in feature_names]
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Get applicant's values
-        field_list = ", ".join(feature_names)
+        # Get applicant's values (quote column names for PostgreSQL uppercase)
+        field_list = ", ".join(f'"{f}"' for f in feature_names)
         query = f"""
             SELECT {field_list}
             FROM home_credit.application_train
-            WHERE SK_ID_CURR = %s
+            WHERE "SK_ID_CURR" = %s
         """
         cursor.execute(query, (applicant_id,))
         applicant_row = cursor.fetchone()
@@ -259,19 +266,20 @@ def generate_feature_plot(
         stats = {}
         for i, feature in enumerate(feature_names):
             applicant_value = applicant_row[i]
+            quoted_feature = f'"{feature}"'
 
             # Get population stats
             stats_query = f"""
                 SELECT
-                    AVG({feature}) as mean,
-                    STDDEV({feature}) as std,
-                    MIN({feature}) as min,
-                    MAX({feature}) as max,
-                    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {feature}) as q25,
-                    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {feature}) as q50,
-                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {feature}) as q75
+                    AVG({quoted_feature}) as mean,
+                    STDDEV({quoted_feature}) as std,
+                    MIN({quoted_feature}) as min,
+                    MAX({quoted_feature}) as max,
+                    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {quoted_feature}) as q25,
+                    PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {quoted_feature}) as q50,
+                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {quoted_feature}) as q75
                 FROM home_credit.application_train
-                WHERE {feature} IS NOT NULL
+                WHERE {quoted_feature} IS NOT NULL
             """
             cursor.execute(stats_query)
             stat_row = cursor.fetchone()
@@ -290,9 +298,9 @@ def generate_feature_plot(
             # Calculate percentile
             if applicant_value is not None and stat_row[0] is not None:
                 percentile_query = f"""
-                    SELECT COUNT(*) * 100.0 / (SELECT COUNT(*) FROM home_credit.application_train WHERE {feature} IS NOT NULL)
+                    SELECT COUNT(*) * 100.0 / (SELECT COUNT(*) FROM home_credit.application_train WHERE {quoted_feature} IS NOT NULL)
                     FROM home_credit.application_train
-                    WHERE {feature} <= %s AND {feature} IS NOT NULL
+                    WHERE {quoted_feature} <= %s AND {quoted_feature} IS NOT NULL
                 """
                 cursor.execute(percentile_query, (applicant_value,))
                 percentile_result = cursor.fetchone()

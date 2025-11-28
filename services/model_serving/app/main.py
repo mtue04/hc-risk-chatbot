@@ -12,11 +12,15 @@ from pydantic import BaseModel, Field, ConfigDict
 
 # Import Feast client
 try:
-    from feast_client import get_feast_client
+    from app.feast_client import get_feast_client
     FEAST_ENABLED = True
 except ImportError:
-    FEAST_ENABLED = False
-    logging.warning("Feast client not available")
+    try:
+        from feast_client import get_feast_client
+        FEAST_ENABLED = True
+    except ImportError:
+        FEAST_ENABLED = False
+        logging.warning("Feast client not available")
 
 # --- Config ---
 class Settings:

@@ -98,6 +98,7 @@ services:
       - ENABLE_SHAP=true
       - DEFAULT_THRESHOLD=0.5
       - FEAST_PROJECT=${FEAST_PROJECT:-hc_risk}
+      - FEAST_REPO_PATH=/opt/feast/feature_repo
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
     volumes:
@@ -117,16 +118,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-
-  redisinsight:
-    image: redislabs/redisinsight:latest
-    ports:
-      - "5540:5540"
-    depends_on:
-      - redis
-    networks:
-      - hc-network
-
   chatbot:
     build:
       context: ./services/chatbot

@@ -82,8 +82,10 @@ class FeastClient:
             # Fetch features from online store
             entity_rows = [{"SK_ID_CURR": int(applicant_id)}]
 
+            # Get feature service object
+            fs = self.store.get_feature_service(feature_service)
             features_response = self.store.get_online_features(
-                features=[f"{feature_service}:*"],
+                features=fs,
                 entity_rows=entity_rows,
             )
 
@@ -126,8 +128,10 @@ class FeastClient:
         try:
             entity_rows = [{"SK_ID_CURR": int(aid)} for aid in applicant_ids]
 
+            # Get feature service object
+            fs = self.store.get_feature_service(feature_service)
             features_response = self.store.get_online_features(
-                features=[f"{feature_service}:*"],
+                features=fs,
                 entity_rows=entity_rows,
             )
 

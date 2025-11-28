@@ -21,3 +21,4 @@ __pycache__/
 uv.lock
 logs/
 CLAUDE.md
+.env
