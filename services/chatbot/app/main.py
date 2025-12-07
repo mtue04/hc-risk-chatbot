@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import base64
 import os
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import structlog
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi.responses import FileResponse
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from .graph import get_chatbot_graph
 from .analysis_graph import get_analysis_graph
 from .analysis_state import AnalysisState
+from .analysis_nodes import encode_image_to_base64
 
 try:
     from .multimodal import get_multimodal_processor
@@ -29,6 +32,63 @@ app = FastAPI(
 
 # In-memory conversation storage (replace with Redis/DB in production)
 _conversations: Dict[str, List[Dict[str, Any]]] = {}
+
+# In-memory chart storage (separate from conversation to avoid token bloat)
+# Format: {thread_id: {step_number: {"path": str, "base64": str}}}
+_analysis_charts: Dict[str, Dict[int, Dict[str, str]]] = {}
+
+
+def _enrich_step_results_with_charts(
+    thread_id: str,
+    step_results: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Enrich step results with base64-encoded chart images.
+
+    This function adds chart_image_base64 to step results without modifying
+    the original state, preventing token bloat in conversation history.
+
+    Args:
+        thread_id: The analysis thread ID
+        step_results: List of step results from the state
+
+    Returns:
+        Enriched step results with base64 chart data
+    """
+    if not step_results:
+        return []
+
+    enriched_results = []
+
+    for step_result in step_results:
+        # Create a copy to avoid modifying the original state
+        enriched = dict(step_result)
+        step_num = step_result.get("step_number")
+        chart_path = step_result.get("chart_image_path")
+
+        # Check if we already have this chart cached
+        if thread_id in _analysis_charts and step_num in _analysis_charts[thread_id]:
+            enriched["chart_image_base64"] = _analysis_charts[thread_id][step_num]["base64"]
+        elif chart_path and os.path.exists(chart_path):
+            # Encode and cache the chart
+            base64_data = encode_image_to_base64(chart_path)
+            if base64_data:
+                # Cache it for future requests
+                if thread_id not in _analysis_charts:
+                    _analysis_charts[thread_id] = {}
+                _analysis_charts[thread_id][step_num] = {
+                    "path": chart_path,
+                    "base64": base64_data
+                }
+                enriched["chart_image_base64"] = base64_data
+            else:
+                enriched["chart_image_base64"] = None
+        else:
+            enriched["chart_image_base64"] = None
+
+        enriched_results.append(enriched)
+
+    return enriched_results
 
 
 class ChatRequest(BaseModel):
@@ -388,10 +448,17 @@ async def start_analysis(request: AnalysisRequest) -> AnalysisResponse:
             status=result.get("workflow_status"),
         )
 
+        # Enrich step results with base64 chart data (if any exist at this stage)
+        step_results = result.get("step_results")
+        enriched_step_results = None
+        if step_results:
+            enriched_step_results = _enrich_step_results_with_charts(thread_id, step_results)
+
         return AnalysisResponse(
             thread_id=thread_id,
             status=result.get("workflow_status", "planning"),
             plan=result.get("plan"),
+            step_results=enriched_step_results,
             message="Analysis plan generated. Please review and approve to proceed.",
         )
 
@@ -460,11 +527,17 @@ async def approve_analysis_plan(
             status=result.get("workflow_status"),
         )
 
+        # Enrich step results with base64 chart data
+        step_results = result.get("step_results")
+        enriched_step_results = None
+        if step_results:
+            enriched_step_results = _enrich_step_results_with_charts(thread_id, step_results)
+
         return AnalysisResponse(
             thread_id=thread_id,
             status=result.get("workflow_status", "executing"),
             plan=result.get("plan"),
-            step_results=result.get("step_results"),
+            step_results=enriched_step_results,
             final_summary=result.get("final_summary"),
             current_step=result.get("current_step"),
             message="Analysis workflow resumed.",
@@ -506,11 +579,17 @@ async def get_analysis_status(thread_id: str) -> AnalysisResponse:
 
         values = state.values
 
+        # Enrich step results with base64 chart data
+        step_results = values.get("step_results")
+        enriched_step_results = None
+        if step_results:
+            enriched_step_results = _enrich_step_results_with_charts(thread_id, step_results)
+
         return AnalysisResponse(
             thread_id=thread_id,
             status=values.get("workflow_status", "unknown"),
             plan=values.get("plan"),
-            step_results=values.get("step_results"),
+            step_results=enriched_step_results,
             final_summary=values.get("final_summary"),
             current_step=values.get("current_step"),
         )
@@ -522,4 +601,237 @@ async def get_analysis_status(thread_id: str) -> AnalysisResponse:
         raise HTTPException(
             status_code=500,
             detail=f"Error checking analysis status: {str(exc)}",
+        )
+
+
+@app.get("/analysis/{thread_id}/chart/{step_number}")
+async def get_analysis_chart(thread_id: str, step_number: int):
+    """
+    Download the chart image for a specific analysis step.
+
+    Returns the PNG image file directly for download or display.
+
+    Args:
+        thread_id: The analysis thread ID
+        step_number: The step number (1-indexed)
+
+    Returns:
+        PNG image file
+    """
+    try:
+        # Check if we have the chart cached
+        if thread_id in _analysis_charts and step_number in _analysis_charts[thread_id]:
+            chart_path = _analysis_charts[thread_id][step_number]["path"]
+            if os.path.exists(chart_path):
+                return FileResponse(
+                    chart_path,
+                    media_type="image/png",
+                    filename=f"analysis_step_{step_number}.png"
+                )
+
+        # If not cached, retrieve from state
+        graph = get_analysis_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+        state = graph.get_state(config)
+
+        if not state or not state.values:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Analysis thread {thread_id} not found"
+            )
+
+        step_results = state.values.get("step_results", [])
+
+        # Find the specific step
+        step_result = next(
+            (r for r in step_results if r["step_number"] == step_number),
+            None
+        )
+
+        if not step_result:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Step {step_number} not found in analysis"
+            )
+
+        chart_path = step_result.get("chart_image_path")
+
+        if not chart_path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No chart available for step {step_number}"
+            )
+
+        if not os.path.exists(chart_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Chart file not found for step {step_number}"
+            )
+
+        logger.info(
+            "chart_downloaded",
+            thread_id=thread_id,
+            step_number=step_number,
+            path=chart_path
+        )
+
+        return FileResponse(
+            chart_path,
+            media_type="image/png",
+            filename=f"analysis_step_{step_number}.png"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "chart_download_error",
+            error=str(exc),
+            thread_id=thread_id,
+            step_number=step_number
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error downloading chart: {str(exc)}"
+        )
+
+
+@app.delete("/analysis/{thread_id}/charts")
+async def delete_analysis_charts(thread_id: str):
+    """
+    Delete all cached charts and chart files for a specific analysis thread.
+
+    Use this to clean up resources when an analysis is no longer needed.
+
+    Args:
+        thread_id: The analysis thread ID
+
+    Returns:
+        Status message with number of charts deleted
+    """
+    try:
+        deleted_count = 0
+        deleted_files = []
+
+        # Delete cached base64 data and files
+        if thread_id in _analysis_charts:
+            for step_num, chart_info in _analysis_charts[thread_id].items():
+                chart_path = chart_info.get("path")
+                if chart_path and os.path.exists(chart_path):
+                    try:
+                        os.remove(chart_path)
+                        deleted_files.append(chart_path)
+                        deleted_count += 1
+                    except OSError as e:
+                        logger.warning(
+                            "chart_file_deletion_failed",
+                            path=chart_path,
+                            error=str(e)
+                        )
+
+            # Remove from cache
+            del _analysis_charts[thread_id]
+
+        logger.info(
+            "charts_deleted",
+            thread_id=thread_id,
+            deleted_count=deleted_count
+        )
+
+        return {
+            "status": "deleted",
+            "thread_id": thread_id,
+            "charts_deleted": deleted_count,
+            "files_deleted": deleted_files
+        }
+
+    except Exception as exc:
+        logger.error("chart_deletion_error", error=str(exc), thread_id=thread_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting charts: {str(exc)}"
+        )
+
+
+@app.delete("/charts/cleanup")
+async def cleanup_old_charts(max_age_hours: int = 24):
+    """
+    Clean up chart files older than specified age.
+
+    This endpoint removes chart files from the filesystem that are older
+    than the specified number of hours. Useful for periodic cleanup.
+
+    Args:
+        max_age_hours: Maximum age of charts to keep (default: 24 hours)
+
+    Returns:
+        Status message with cleanup statistics
+    """
+    try:
+        import time
+        from pathlib import Path
+
+        chart_dir = Path(os.getenv("CHART_OUTPUT_DIR", "/tmp/analysis_charts"))
+
+        if not chart_dir.exists():
+            return {
+                "status": "no_charts_directory",
+                "message": f"Chart directory {chart_dir} does not exist"
+            }
+
+        current_time = time.time()
+        max_age_seconds = max_age_hours * 3600
+        deleted_count = 0
+        deleted_files = []
+
+        # Iterate through all PNG files in the chart directory
+        for chart_file in chart_dir.glob("*.png"):
+            try:
+                file_age = current_time - chart_file.stat().st_mtime
+                if file_age > max_age_seconds:
+                    chart_file.unlink()
+                    deleted_files.append(str(chart_file))
+                    deleted_count += 1
+            except Exception as e:
+                logger.warning(
+                    "cleanup_file_error",
+                    file=str(chart_file),
+                    error=str(e)
+                )
+
+        # Clean up cache entries for deleted files
+        threads_to_remove = []
+        for thread_id, charts in _analysis_charts.items():
+            steps_to_remove = []
+            for step_num, chart_info in charts.items():
+                if chart_info["path"] in deleted_files:
+                    steps_to_remove.append(step_num)
+
+            for step_num in steps_to_remove:
+                del charts[step_num]
+
+            if not charts:
+                threads_to_remove.append(thread_id)
+
+        for thread_id in threads_to_remove:
+            del _analysis_charts[thread_id]
+
+        logger.info(
+            "old_charts_cleaned",
+            deleted_count=deleted_count,
+            max_age_hours=max_age_hours
+        )
+
+        return {
+            "status": "cleaned",
+            "deleted_count": deleted_count,
+            "max_age_hours": max_age_hours,
+            "chart_directory": str(chart_dir)
+        }
+
+    except Exception as exc:
+        logger.error("cleanup_error", error=str(exc))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error during cleanup: {str(exc)}"
         )

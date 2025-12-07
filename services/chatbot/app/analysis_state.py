@@ -53,6 +53,9 @@ class AnalysisStepResult(TypedDict):
     chart_image_path: str | None
     """Path to the generated chart image."""
 
+    chart_image_base64: str | None
+    """Base64-encoded chart image (only populated in API responses, not stored in state)."""
+
     insights: str
     """Vision model's analysis of the chart/data."""
 

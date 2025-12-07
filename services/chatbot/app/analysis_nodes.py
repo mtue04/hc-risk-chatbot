@@ -13,6 +13,7 @@ This module contains all the LangGraph nodes for the iterative analysis process:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from typing import Any
@@ -76,6 +77,30 @@ def get_llm() -> ChatGoogleGenerativeAI | None:
         temperature=0.7,
         convert_system_message_to_human=True,
     )
+
+
+def encode_image_to_base64(image_path: str) -> str | None:
+    """
+    Encode image file to base64 string.
+
+    Args:
+        image_path: Path to the image file
+
+    Returns:
+        Base64-encoded string or None if encoding fails
+    """
+    try:
+        if not os.path.exists(image_path):
+            logger.warning("image_not_found", path=image_path)
+            return None
+
+        with open(image_path, "rb") as img_file:
+            encoded = base64.b64encode(img_file.read()).decode("utf-8")
+            logger.info("image_encoded", path=image_path, size_kb=len(encoded) / 1024)
+            return encoded
+    except Exception as e:
+        logger.error("image_encoding_error", error=str(e), path=image_path)
+        return None
 
 
 def schema_reader_node(state: AnalysisState) -> dict:
