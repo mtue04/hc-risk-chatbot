@@ -11,9 +11,16 @@ langchain>=0.1.0
 langchain-core>=0.1.0
 langchain-google-genai>=0.0.11
 langgraph>=0.1.0
+langgraph-checkpoint-postgres>=1.0.0
 
 # Database
 psycopg2-binary>=2.9.11
 
+# Redis for caching and checkpointing
+redis>=5.0.0
+
 # Gemini AI
 google-generativeai>=0.8.5
+
+# Retry logic
+tenacity>=8.2.0

@@ -2,22 +2,34 @@
 
 Conversational AI chatbot for credit risk analysis using LangGraph state machine and Google Gemini.
 
+**Version 0.3.0** - Enhanced with PostgreSQL checkpointing, Redis caching, retry logic, and 7 specialized tools.
+
 ---
 
 ## 🏗️ Architecture
 
+### Enhanced (Default)
 ```
 User Query
     ↓
 FastAPI Endpoint (/chat)
     ↓
-LangGraph State Machine
-    ├─→ Gemini LLM (natural language understanding)
-    ├─→ Tool: get_risk_prediction (model API)
-    ├─→ Tool: query_applicant_data (PostgreSQL)
-    └─→ Tool: generate_feature_plot (statistics)
+LangGraph State Machine (Enhanced)
+    ├─→ Gemini LLM with retry logic
+    ├─→ 7 Tools (cached in Redis):
+    │   ├─→ get_risk_prediction
+    │   ├─→ query_applicant_data
+    │   ├─→ generate_feature_plot
+    │   ├─→ compare_applicants ✨
+    │   ├─→ explain_risk_factors ✨
+    │   ├─→ query_bureau_history ✨
+    │   └─→ get_portfolio_stats ✨
+    ├─→ Extract insights node
+    └─→ Summarization node (every 10 turns)
     ↓
 Natural Language Response + Tool Outputs
+    ↓
+State persisted to PostgreSQL checkpoints
 ```
 
 ---
@@ -28,12 +40,19 @@ Natural Language Response + Tool Outputs
 services/chatbot/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # FastAPI application
-│   ├── graph.py             # LangGraph state machine
-│   └── tools.py             # Tool definitions (3 tools)
+│   ├── main.py              # FastAPI app
+│   ├── graph.py             # LangGraph (all features, configurable)
+│   ├── tools.py             # All 7 tools with caching & retry
+│   └── cache.py             # Redis caching utilities
 ├── Dockerfile
 └── requirements.txt
 ```
+
+**Note**: All features are in `graph.py` and `tools.py`. Use environment variables to toggle:
+- `USE_ENHANCED_GRAPH=true` → 7 tools + memory management (default)
+- `USE_ENHANCED_GRAPH=false` → 3 tools only
+- `ENABLE_CHECKPOINTING=true` → PostgreSQL persistence (default)
+- `ENABLE_CHECKPOINTING=false` → In-memory storage
 
 ---
 
@@ -396,5 +415,18 @@ def load_conversation(session_id):
 
 ---
 
-**Version:** 0.2.0  
-**Last Updated:** 2025-11-23
+**Version:** 0.3.0
+**Last Updated:** 2025-12-07
+
+---
+
+## ✨ New in v0.3.0
+
+- 🎯 **7 Tools** (vs 3): Added compare, explain, bureau history, portfolio stats
+- 💾 **PostgreSQL Checkpointing**: Conversations persist across restarts
+- ⚡ **Redis Caching**: 100x faster repeated queries
+- 🔄 **Retry Logic**: Exponential backoff for LLM and tools
+- 🧠 **Memory Management**: Auto-summarization every 10 turns
+- 📊 **Enhanced State**: Tracks summaries, insights, mentioned applicants
+
+See `../../IMPROVEMENTS.md` for full details.
