@@ -16,7 +16,6 @@ langgraph>=0.1.0
 
 # ----- Database -----
 psycopg2-binary>=2.9.11
-numpy>=1.24.0
 
 # ----- Google AI -----
 google-generativeai>=0.8.5
@@ -28,3 +27,9 @@ Pillow>=10.0.0
 python-multipart>=0.0.6
 PyPDF2>=3.0.0
 python-docx>=1.1.0
+
+# ----- Data analysis and visualization -----
+pandas>=2.0.0
+matplotlib>=3.7.0
+seaborn>=0.13.0
+numpy>=1.24.0

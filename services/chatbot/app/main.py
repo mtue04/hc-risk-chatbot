@@ -10,6 +10,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from .graph import get_chatbot_graph
+from .analysis_graph import get_analysis_graph
+from .analysis_state import AnalysisState
+
 try:
     from .multimodal import get_multimodal_processor
     MULTIMODAL_AVAILABLE = True
@@ -20,8 +23,8 @@ logger = structlog.get_logger()
 
 app = FastAPI(
     title="HC Risk Chatbot",
-    version="0.2.0",
-    description="LangGraph-powered conversational credit risk analysis",
+    version="0.3.0",
+    description="LangGraph-powered conversational credit risk analysis with multi-step iterative analysis",
 )
 
 # In-memory conversation storage (replace with Redis/DB in production)
@@ -54,8 +57,9 @@ def health_check():
     """Health check endpoint."""
     return {
         "status": "ok",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "langgraph_enabled": True,
+        "analysis_workflow_enabled": True,
         "gemini_configured": os.getenv("GEMINI_API_KEY", "changeme") != "changeme",
     }
 
@@ -196,32 +200,32 @@ async def chat_multimodal(
 ):
     """
     Multimodal chat endpoint supporting voice and image input.
-    
+
     Accepts:
     - Text question (form field)
     - Audio file for voice transcription (WAV, MP3, OGG, WEBM)
     - Image file for document extraction (PNG, JPEG)
     - Session ID for conversation continuity
     - Applicant ID for focused analysis
-    
+
     Returns standard chat response with processed multimodal context.
     """
     if not MULTIMODAL_AVAILABLE:
         raise HTTPException(
-            status_code=501, 
+            status_code=501,
             detail="Multimodal processing not available. Install required dependencies."
         )
-    
+
     processor = get_multimodal_processor()
     final_question = question or ""
     extracted_context = None
-    
+
     # Process audio if provided
     if audio:
         try:
             audio_bytes = await audio.read()
             transcription_result = await processor.transcribe_audio(audio_bytes)
-            
+
             if "error" in transcription_result:
                 logger.warning(f"Audio transcription failed: {transcription_result['error']}")
             else:
@@ -231,15 +235,15 @@ async def chat_multimodal(
                     logger.info(f"Audio transcribed: {len(transcribed_text)} chars")
         except Exception as e:
             logger.error(f"Audio processing error: {e}")
-    
+
     # Process document/image if provided
     if image:
         try:
             file_bytes = await image.read()
             filename = image.filename or "document"
-            
+
             extraction_result = await processor.extract_text_from_file(file_bytes, filename)
-            
+
             if "error" in extraction_result:
                 logger.warning(f"Document extraction failed: {extraction_result['error']}")
             else:
@@ -247,7 +251,7 @@ async def chat_multimodal(
                 logger.info(f"Document processed: {extraction_result.get('file_type', 'unknown')}")
         except Exception as e:
             logger.error(f"Document processing error: {e}")
-    
+
     # Build question with context if document was processed
     if extracted_context:
         # Handle different return formats from multimodal processor
@@ -261,29 +265,29 @@ async def chat_multimodal(
             context_str = extracted_context["raw_response"][:2000]
         else:
             context_str = str(extracted_context)
-            
+
         if final_question:
             final_question = f"{final_question}\n\n[Document content: {context_str}]"
         else:
             final_question = f"Analyze this document content and respond to any questions about it:\n\n{context_str}"
-        
+
         logger.info(f"Document context added: {len(context_str)} chars")
-    
+
     if not final_question:
         raise HTTPException(
             status_code=400,
             detail="No question provided. Send text, audio, or image input."
         )
-    
+
     # Forward to regular chat endpoint
     chat_request = ChatRequest(
         question=final_question,
         session_id=session_id,
         applicant_id=applicant_id,
     )
-    
+
     response = await chat(chat_request)
-    
+
     # Add multimodal metadata to response
     return {
         **response.model_dump(),
@@ -293,3 +297,229 @@ async def chat_multimodal(
             "extracted_context": extracted_context,
         }
     }
+
+
+# ============================================================================
+# Multi-Step Analysis Endpoints
+# ============================================================================
+
+
+class AnalysisRequest(BaseModel):
+    """Request to start a new multi-step analysis."""
+
+    user_request: str = Field(
+        ...,
+        description="Natural language description of the analysis to perform",
+        examples=["Analyze monthly revenue trends", "Compare user segments by age"],
+    )
+    thread_id: Optional[str] = Field(
+        None,
+        description="Thread ID for resuming an existing analysis. Auto-generated if not provided.",
+    )
+
+
+class AnalysisResponse(BaseModel):
+    """Response from analysis workflow."""
+
+    thread_id: str
+    status: str
+    plan: Optional[Dict[str, Any]] = None
+    step_results: Optional[List[Dict[str, Any]]] = None
+    final_summary: Optional[str] = None
+    current_step: Optional[int] = None
+    message: Optional[str] = None
+
+
+class PlanApprovalRequest(BaseModel):
+    """Request to approve or edit an analysis plan."""
+
+    approved: bool = Field(..., description="Whether to approve the plan")
+    edits: Optional[str] = Field(
+        None,
+        description="Requested modifications to the plan (if not approved)",
+    )
+
+
+@app.post("/analysis/start", response_model=AnalysisResponse)
+async def start_analysis(request: AnalysisRequest) -> AnalysisResponse:
+    """
+    Start a new multi-step analysis workflow.
+
+    This endpoint:
+    1. Reads the database schema
+    2. Generates an analysis plan using LLM
+    3. Returns the plan for user review
+
+    The workflow will pause at the human review step, waiting for approval.
+    """
+    thread_id = request.thread_id or str(uuid4())
+
+    logger.info(
+        "analysis_start_requested",
+        thread_id=thread_id,
+        request=request.user_request,
+    )
+
+    # Initialize analysis state
+    initial_state: AnalysisState = {
+        "messages": [],
+        "user_request": request.user_request,
+        "schema_info": None,
+        "plan": None,
+        "current_step": 0,
+        "step_results": [],
+        "final_summary": None,
+        "workflow_status": "planning",
+    }
+
+    try:
+        # Get analysis graph
+        graph = get_analysis_graph()
+
+        # Configure with thread ID for checkpointing
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Invoke the graph - it will pause at human_review
+        result = graph.invoke(initial_state, config)
+
+        logger.info(
+            "analysis_plan_generated",
+            thread_id=thread_id,
+            status=result.get("workflow_status"),
+        )
+
+        return AnalysisResponse(
+            thread_id=thread_id,
+            status=result.get("workflow_status", "planning"),
+            plan=result.get("plan"),
+            message="Analysis plan generated. Please review and approve to proceed.",
+        )
+
+    except Exception as exc:
+        logger.error("analysis_start_error", error=str(exc), thread_id=thread_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error starting analysis: {str(exc)}",
+        )
+
+
+@app.post("/analysis/{thread_id}/approve", response_model=AnalysisResponse)
+async def approve_analysis_plan(
+    thread_id: str,
+    approval: PlanApprovalRequest,
+) -> AnalysisResponse:
+    """
+    Approve or request edits to the analysis plan.
+
+    If approved, the workflow will continue with execution.
+    If edits are requested, the workflow will regenerate the plan.
+    """
+    logger.info(
+        "plan_approval_received",
+        thread_id=thread_id,
+        approved=approval.approved,
+        has_edits=approval.edits is not None,
+    )
+
+    try:
+        # Get the current state from the graph
+        graph = get_analysis_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Get current state
+        current_state = graph.get_state(config)
+
+        if not current_state or not current_state.values:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Analysis thread {thread_id} not found",
+            )
+
+        state_values = current_state.values
+
+        # Update the plan with approval/edits
+        plan = state_values.get("plan", {})
+        if not plan:
+            raise HTTPException(
+                status_code=400,
+                detail="No plan found to approve",
+            )
+
+        plan["approved"] = approval.approved
+        plan["user_edits"] = approval.edits
+
+        # Update state - the graph will use the modified plan
+        graph.update_state(config, {"plan": plan})
+
+        # Resume the workflow from the interrupt
+        result = graph.invoke(None, config)  # Resume with existing state
+
+        logger.info(
+            "analysis_resumed",
+            thread_id=thread_id,
+            status=result.get("workflow_status"),
+        )
+
+        return AnalysisResponse(
+            thread_id=thread_id,
+            status=result.get("workflow_status", "executing"),
+            plan=result.get("plan"),
+            step_results=result.get("step_results"),
+            final_summary=result.get("final_summary"),
+            current_step=result.get("current_step"),
+            message="Analysis workflow resumed.",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("plan_approval_error", error=str(exc), thread_id=thread_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing plan approval: {str(exc)}",
+        )
+
+
+@app.get("/analysis/{thread_id}/status", response_model=AnalysisResponse)
+async def get_analysis_status(thread_id: str) -> AnalysisResponse:
+    """
+    Get the current status of an analysis workflow.
+
+    Returns the current state including:
+    - Workflow status
+    - Analysis plan
+    - Completed step results
+    - Final summary (if completed)
+    """
+    try:
+        graph = get_analysis_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Get current state
+        state = graph.get_state(config)
+
+        if not state or not state.values:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Analysis thread {thread_id} not found",
+            )
+
+        values = state.values
+
+        return AnalysisResponse(
+            thread_id=thread_id,
+            status=values.get("workflow_status", "unknown"),
+            plan=values.get("plan"),
+            step_results=values.get("step_results"),
+            final_summary=values.get("final_summary"),
+            current_step=values.get("current_step"),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("status_check_error", error=str(exc), thread_id=thread_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking analysis status: {str(exc)}",
+        )
