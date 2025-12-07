@@ -1,197 +1,101 @@
-# 🚀 Quick Start Guide
+# Quick Start Guide
 
-Get the HomeCredit Risk Chatbot running in 10 minutes!
+Get the HomeCredit Risk Chatbot running in 10 minutes.
 
----
+## Prerequisites
 
-## ⚡ Fast Track
+- Docker Desktop installed and running
+- Gemini API key from https://makersuite.google.com/app/apikey
+
+## Setup
 
 ```bash
 # 1. Navigate to project
 cd d:/university/S10/PTDLTM/hc-risk-chatbot
 
-# 2. Configure Gemini API (REQUIRED)
-# Edit config/.env and add your Gemini API key:
-# GEMINI_API_KEY=your_key_here
+# 2. Create config file
+cp config/.env.example config/.env
 
-# 3. Start all services
-docker compose up -d
+# 3. Edit .env and add your Gemini API key
+notepad config/.env
+# Set: GEMINI_API_KEY=your_actual_key
 
-# 4. Wait for initialization (~2 minutes)
-# Watch the logs:
+# 4. Start all services
+docker compose up -d --build
+
+# 5. Wait for initialization (~2-3 minutes)
 docker compose logs -f
-
-# 5. Access the UI
-# Open browser: http://localhost:8501
 ```
 
----
-
-## 🎯 What You Get
-
-After deployment, you'll have:
+## Access Points
 
 | Service | URL | Purpose |
 |---------|-----|---------|
-| **Streamlit UI** | http://localhost:8501 | Chat interface |
-| **Chatbot API** | http://localhost:8500 | LangGraph backend |
-| **Model API** | http://localhost:8001 | Risk predictions |
-| **Airflow** | http://localhost:8080 | Pipeline orchestration |
-| **RedisInsight** | http://localhost:5540 | Feature store monitoring |
+| Streamlit UI | http://localhost:8501 | Chat interface |
+| Chatbot API | http://localhost:8500/docs | API documentation |
+| Model API | http://localhost:8001/docs | Prediction endpoints |
+| Airflow | http://localhost:8080 | Pipeline (admin/admin) |
 
-**Default Credentials:**
-- Airflow: `admin` / `admin`
+## First Run
 
----
-
-## 📝 First Steps
-
-### 1. Check Service Health
-
-```bash
-# All services should be "Up (healthy)"
-docker compose ps
-```
-
-### 2. Trigger Feature Pipeline
-
-**Option A - Via UI:**
-1. Open http://localhost:8080
+1. Open http://localhost:8080 (Airflow)
 2. Login: `admin` / `admin`
-3. Find `feature_engineering_pipeline` DAG
-4. Click "Trigger DAG" button
+3. Trigger DAG: `feature_engineering_pipeline`
+4. Wait ~10 minutes for completion
+5. Open http://localhost:8501 and start chatting
 
-**Option B - Via CLI:**
-```bash
-docker compose exec airflow airflow dags trigger feature_engineering_pipeline
-```
-
-Wait ~10 minutes for completion.
-
-### 3. Try the Chatbot
-
-Open http://localhost:8501 and try:
-
-```
-"What is the risk score for applicant 100001?"
-```
-
-```
-"Show me the top risk factors"
-```
-
-```
-"Compare income and credit for applicant 100002"
-```
-
----
-
-## 🔍 Verify Everything Works
-
-### Test 1: Database
+## Test Commands
 
 ```bash
-docker compose exec postgres psql -U hc_admin -d homecredit_db \
-  -c "SELECT COUNT(*) FROM home_credit.application_train;"
+# Check health
+make status
+
+# Test Model API
+make test-api
+
+# Test hypothetical prediction
+make test-hypothetical
 ```
 
-✅ **Expected:** ~307,000 rows
+## Sample Queries
 
-### Test 2: Model API
-
-```bash
-curl http://localhost:8001/health
+```
+"What is the risk score for applicant 100002?"
+"Show top factors affecting applicant 100001"
+"What would be the risk for someone with income 300k, credit 1M, age 35?"
 ```
 
-✅ **Expected:** `{"status": "ok"}`
+## Multimodal Setup (Optional)
 
-### Test 3: Chatbot API
+For voice/image features:
+
+1. Create Google Cloud project
+2. Enable Cloud Speech-to-Text and Cloud Vision APIs
+3. Create service account and download JSON key
+4. Save as `config/google-credentials.json`
+5. Restart: `docker compose restart chatbot`
+
+## Troubleshooting
 
 ```bash
-curl http://localhost:8500/health
+# View logs
+make logs-chatbot
+make logs-model
+
+# Restart everything
+make restart
+
+# Clean and rebuild
+make clean
+docker compose up -d --build
 ```
 
-✅ **Expected:** `{"langgraph_enabled": true, "gemini_configured": true}`
-
-### Test 4: Prediction
+## Shutdown
 
 ```bash
-curl http://localhost:8001/predict/applicant/100001
-```
+# Stop services
+make down
 
-✅ **Expected:** JSON with `probability` field
-
-### Test 5: Chat
-
-```bash
-curl -X POST http://localhost:8500/chat \
-  -H "Content-Type: application/json" \
-  -d '{"question": "Risk for 100001?"}'
-```
-
-✅ **Expected:** Natural language response
-
----
-
-## ❓ Troubleshooting
-
-### Gemini Not Working?
-
-Check your API key:
-```bash
-cat config/.env | grep GEMINI_API_KEY
-```
-
-If it says `changeme`, update it with a real key from https://makersuite.google.com/app/apikey
-
-Then restart:
-```bash
-docker compose restart chatbot
-```
-
-### Services Not Starting?
-
-```bash
-# Check logs for errors
-docker compose logs [service_name]
-
-# Common fixes:
-docker compose down
-docker compose up -d
-```
-
-### Database Empty?
-
-```bash
-# Reload data
-docker compose down -v
-docker compose up -d postgres
-# Wait 2 minutes for init scripts
-```
-
----
-
-## 🎓 Learn More
-
-- **Full Deployment Guide:** [docs/DEPLOYMENT.md](file:///d:/university/S10/PTDLTM/hc-risk-chatbot/docs/DEPLOYMENT.md)
-- **Project Architecture:** [README.md](file:///d:/university/S10/PTDLTM/hc-risk-chatbot/README.md)
-- **Data Pipeline:** [docs/Datapipeline.md](file:///d:/university/S10/PTDLTM/hc-risk-chatbot/docs/Datapipeline.md)
-- **Feature Store:** [services/feast/README.md](file:///d:/university/S10/PTDLTM/hc-risk-chatbot/services/feast/README.md)
-
----
-
-## 🛑 Shutdown
-
-```bash
-# Stop all services
-docker compose down
-
-# Remove all data (fresh start)
+# Remove all data
 docker compose down -v
 ```
-
----
-
-**Need Help?** Check `docker compose logs -f` for error messages.
-
-Enjoy! 🎉

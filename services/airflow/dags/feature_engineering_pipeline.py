@@ -393,6 +393,9 @@ def engineer_features(**context):
     prev_agg = read_table_via_pandas(engine, prev_agg_query)
     prev_agg = prev_agg.with_columns([
         pl.col("SK_ID_CURR").cast(pl.Int64),
+        pl.col("PREV_APPROVED_COUNT").cast(pl.Float64),
+        pl.col("PREV_SK_ID_PREV_COUNT").cast(pl.Float64),
+    ]).with_columns([
         (pl.col("PREV_APPROVED_COUNT") / pl.col("PREV_SK_ID_PREV_COUNT")).alias("PREV_APPROVAL_RATE")
     ])
     logger.info(f"Loaded previous application aggregations: {prev_agg.shape}")
@@ -507,6 +510,18 @@ def engineer_features(**context):
 
     # 9. Advanced financial features
     logger.info("Creating advanced financial features...")
+    # Cast numeric columns to Float64 to avoid string arithmetic errors
+    numeric_cols_for_advanced = [
+        "AMT_CREDIT", "AMT_ANNUITY", "AMT_INCOME_TOTAL", "AMT_GOODS_PRICE",
+        "EXT_SOURCE_3", "DAYS_EMPLOYED", "PREV_CNT_PAYMENT_MEAN"
+    ]
+    cast_exprs = []
+    for col_name in numeric_cols_for_advanced:
+        if col_name in df.columns:
+            cast_exprs.append(pl.col(col_name).cast(pl.Float64, strict=False).alias(col_name))
+    if cast_exprs:
+        df = df.with_columns(cast_exprs)
+
     df = df.with_columns([
         (pl.col("AMT_CREDIT") / (pl.col("EXT_SOURCE_3") + 0.00001)).alias("AMT_CREDIT_div_EXT_SOURCE_3"),
         (pl.col("AMT_ANNUITY") / (pl.col("EXT_SOURCE_3") + 0.00001)).alias("AMT_ANNUITY_div_EXT_SOURCE_3"),

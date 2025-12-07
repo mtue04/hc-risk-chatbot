@@ -225,15 +225,15 @@ def generate_feature_plot(
 
     Args:
         applicant_id: The applicant ID (SK_ID_CURR)
-        feature_names: List of feature names to visualize (max 5)
+        feature_names: List of feature names to visualize (max 15)
                       Feature names are case-insensitive (will be converted to uppercase)
 
     Returns:
         Dictionary with plot data and statistics
     """
-    if len(feature_names) > 5:
+    if len(feature_names) > 15:
         return {
-            "error": "Maximum 5 features allowed per plot",
+            "error": "Maximum 15 features allowed per plot",
             "requested": len(feature_names),
         }
 
@@ -334,4 +334,117 @@ def generate_feature_plot(
         return {
             "error": f"Unexpected error: {str(exc)}",
             "applicant_id": applicant_id,
+        }
+
+
+@tool
+def predict_hypothetical_applicant(
+    income: float,
+    credit_amount: float,
+    age: int,
+    employment_years: int = 0,
+    education: str = "Higher education",
+    has_car: bool = False,
+    has_realty: bool = True,
+    children_count: int = 0,
+    ext_source_2: float | None = None,
+    ext_source_3: float | None = None,
+) -> dict[str, Any]:
+    """
+    Predict credit risk for a hypothetical applicant profile.
+    
+    Use this when user wants to test "what if" scenarios without an existing
+    applicant ID. Great for exploring how different factors affect risk.
+    
+    Args:
+        income: Annual income in the local currency
+        credit_amount: Requested loan/credit amount
+        age: Applicant age in years
+        employment_years: Years at current job (0 if unemployed)
+        education: Education level (e.g., "Higher education", "Secondary")
+        has_car: Whether applicant owns a car
+        has_realty: Whether applicant owns real estate
+        children_count: Number of children
+        ext_source_2: External credit score 2 (0-1, optional)
+        ext_source_3: External credit score 3 (0-1, optional)
+    
+    Returns:
+        Prediction with probability, risk level, and SHAP explanation
+    """
+    try:
+        # Build features dictionary
+        features = {
+            "AMT_INCOME_TOTAL": float(income),
+            "AMT_CREDIT": float(credit_amount),
+            "DAYS_BIRTH": -age * 365,  # Convert age to days (negative)
+            "DAYS_EMPLOYED": -employment_years * 365 if employment_years > 0 else 365243,  # Special value for unemployed
+            "CNT_CHILDREN": children_count,
+            "FLAG_OWN_CAR": 1 if has_car else 0,
+            "FLAG_OWN_REALTY": 1 if has_realty else 0,
+        }
+        
+        # Add external sources if provided (these are the most important features!)
+        if ext_source_2 is not None:
+            features["EXT_SOURCE_2"] = float(ext_source_2)
+        if ext_source_3 is not None:
+            features["EXT_SOURCE_3"] = float(ext_source_3)
+        
+        # Calculate derived features
+        if credit_amount > 0:
+            features["CREDIT_INCOME_RATIO"] = credit_amount / income if income > 0 else 10
+        
+        # Call the hypothetical prediction endpoint
+        url = f"{MODEL_API_URL}/predict/hypothetical"
+        payload = {
+            "features": features,
+            "name": f"Hypothetical (Age {age}, Income {income:,.0f})",
+            "fill_missing_with_median": True,
+        }
+        
+        with httpx.Client(timeout=15.0) as client:
+            response = client.post(url, json=payload)
+            response.raise_for_status()
+            result = response.json()
+        
+        # Enhance the response with human-readable summary
+        probability = result.get("probability", 0)
+        risk_level = result.get("risk_level", "Unknown")
+        
+        summary = f"""**Hypothetical Profile Analysis**
+
+**Input:**
+- Income: {income:,.0f}
+- Credit Amount: {credit_amount:,.0f}
+- Age: {age}
+- Employment: {employment_years} years
+- Has Car: {'Yes' if has_car else 'No'}
+- Has Realty: {'Yes' if has_realty else 'No'}
+
+**Prediction:**
+- Default Probability: **{probability*100:.1f}%**
+- Classification: **{risk_level} Risk**
+- Debt-to-Income Ratio: {credit_amount/income:.1f}x
+"""
+        
+        result["summary"] = summary
+        result["input_features"] = features
+        
+        logger.info(
+            "hypothetical_prediction_completed",
+            probability=probability,
+            risk_level=risk_level,
+        )
+        
+        return result
+        
+    except httpx.HTTPError as exc:
+        logger.error("hypothetical_api_error", error=str(exc))
+        return {
+            "error": f"Could not get prediction: {str(exc)}",
+            "suggestion": "Make sure model_serving is running",
+        }
+    except Exception as exc:
+        logger.error("hypothetical_tool_error", error=str(exc))
+        return {
+            "error": f"Unexpected error: {str(exc)}",
         }

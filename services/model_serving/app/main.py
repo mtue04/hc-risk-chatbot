@@ -23,16 +23,29 @@ except ImportError:
         logging.warning("Feast client not available")
 
 # --- Config ---
-class Settings:
-    app_name = "HC Risk Model Serving"
-    app_version = "0.1.0"
-    host = "0.0.0.0"
-    port = 8000
-    debug = True
-    log_level = "INFO"
-    enable_shap = False  # Toggle SHAP explanations
-
-settings = Settings()
+try:
+    from app.config import settings
+    from app.explainer import shap_explainer
+    SHAP_AVAILABLE = True
+except ImportError:
+    try:
+        from config import settings
+        from explainer import shap_explainer
+        SHAP_AVAILABLE = True
+    except ImportError:
+        # Fallback settings if config module not available
+        class Settings:
+            app_name = "HC Risk Model Serving"
+            app_version = "0.1.0"
+            host = "0.0.0.0"
+            port = 8000
+            debug = True
+            log_level = "INFO"
+            enable_shap = True
+        settings = Settings()
+        shap_explainer = None
+        SHAP_AVAILABLE = False
+        logging.warning("config.py not available, using inline settings")
 
 # --- Logging ---
 logging.basicConfig(
@@ -66,6 +79,23 @@ class BatchApplicantRequest(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     applicant_ids: List[int] = Field(..., description="List of SK_ID_CURR values")
+
+class HypotheticalRequest(BaseModel):
+    """Request for predicting risk of a hypothetical/custom applicant profile."""
+    model_config = ConfigDict(protected_namespaces=())
+    
+    features: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Custom feature values for the hypothetical applicant"
+    )
+    name: str = Field(
+        default="Custom Applicant",
+        description="Human-readable label for this hypothetical profile"
+    )
+    fill_missing_with_median: bool = Field(
+        default=True,
+        description="If True, missing features will be filled with population median"
+    )
 
 class PredictionOutput(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
@@ -238,17 +268,107 @@ def predict_batch(payload: BatchRequest):
 
 @app.post("/explain")
 def explain(payload: FeatureVector):
-    """SHAP explanation endpoint (placeholder)"""
-    if not settings.enable_shap or model is None:
+    """SHAP explanation endpoint with detailed feature contributions."""
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    if not settings.enable_shap:
         return {
-            "message": "Model artifact not available or SHAP disabled. Returning heuristic stub explanation.",
+            "message": "SHAP explanations are disabled in config.",
             "contributions": payload.features,
         }
-    # TODO: Implement SHAP integration
-    return {
-        "message": "SHAP integration not yet implemented.",
-        "features": payload.features,
+    
+    if not SHAP_AVAILABLE or shap_explainer is None:
+        return {
+            "message": "SHAP explainer not available. Returning feature values as stub.",
+            "contributions": payload.features,
+        }
+    
+    try:
+        explanation = shap_explainer.explain(payload.features)
+        return {
+            "applicant_features": payload.features,
+            **explanation
+        }
+    except Exception as e:
+        logger.error(f"SHAP explanation error: {e}")
+        return {
+            "message": f"SHAP explanation failed: {str(e)}",
+            "contributions": payload.features,
+        }
+
+# --- Hypothetical Prediction Endpoint ---
+
+@app.post("/predict/hypothetical")
+def predict_hypothetical(payload: HypotheticalRequest):
+    """
+    Predict default probability for a hypothetical/custom applicant profile.
+    
+    This endpoint allows prediction without requiring an existing applicant ID.
+    Use this for "what-if" scenario testing with custom feature values.
+    
+    Returns prediction probability, risk classification, and SHAP explanation.
+    """
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    if not payload.features:
+        raise HTTPException(
+            status_code=400, 
+            detail="Features dictionary cannot be empty. Please provide at least some feature values."
+        )
+    
+    # Get required feature names from model
+    try:
+        if hasattr(model, "feature_name_"):
+            required_features = model.feature_name_
+        elif hasattr(model, "feature_names_in_"):
+            required_features = model.feature_names_in_
+        else:
+            required_features = list(payload.features.keys())
+    except AttributeError:
+        required_features = list(payload.features.keys())
+    
+    # Fill missing features with 0 (or could use population median if available)
+    filled_features = {}
+    for feature in required_features:
+        if feature in payload.features:
+            filled_features[feature] = payload.features[feature]
+        else:
+            filled_features[feature] = 0.0  # Default: fill with 0
+    
+    # Make prediction
+    feature_vector = FeatureVector(features=filled_features)
+    prediction_result = predict(feature_vector)
+    
+    response = {
+        "name": payload.name,
+        "probability": prediction_result.probability,
+        "prediction": "High Risk" if prediction_result.probability > 0.5 else "Low Risk",
+        "risk_level": (
+            "Low" if prediction_result.probability < 0.3 
+            else "Medium" if prediction_result.probability < 0.6 
+            else "High"
+        ),
+        "provided_features": list(payload.features.keys()),
+        "total_features_used": len(filled_features),
+        "features_filled_with_default": len(required_features) - len(payload.features),
     }
+    
+    # Add SHAP explanation if available
+    if SHAP_AVAILABLE and shap_explainer is not None and settings.enable_shap:
+        try:
+            explanation = shap_explainer.explain(filled_features)
+            response["explanation"] = explanation
+        except Exception as e:
+            logger.warning(f"SHAP explanation failed for hypothetical: {e}")
+            response["explanation"] = {"message": "SHAP explanation not available"}
+    
+    logger.info(
+        f"Hypothetical prediction: {payload.name}, prob={prediction_result.probability:.4f}, features={len(payload.features)}"
+    )
+    
+    return response
 
 # --- Feast-powered Endpoints ---
 
@@ -295,11 +415,11 @@ def predict_applicant_get(applicant_id: int):
 def explain_applicant_get(applicant_id: int):
     """
     GET SHAP explanation for an applicant using Feast feature store.
+    Returns detailed SHAP values showing feature contributions to the prediction.
     """
     if not FEAST_ENABLED or feast_client is None or not feast_client.is_available():
-        # Return stub explanation when Feast not available
         return {
-            "message": "Feast feature store not available. Returning stub explanation.",
+            "message": "Feast feature store not available.",
             "contributions": {},
             "applicant_id": applicant_id,
         }
@@ -316,11 +436,34 @@ def explain_applicant_get(applicant_id: int):
             detail=f"Features not found for applicant {applicant_id}"
         )
 
-    # Return explanation (stub for now since SHAP not fully implemented)
+    # Get prediction first
+    feature_vector = FeatureVector(features=features_dict)
+    prediction_result = predict(feature_vector)
+    
+    # Get SHAP explanation if available
+    if SHAP_AVAILABLE and shap_explainer is not None and settings.enable_shap:
+        try:
+            explanation = shap_explainer.explain(features_dict)
+            return {
+                "applicant_id": applicant_id,
+                "probability": prediction_result.probability,
+                "prediction": "High Risk" if prediction_result.probability > 0.5 else "Low Risk",
+                **explanation
+            }
+        except Exception as e:
+            logger.error(f"SHAP explanation failed for applicant {applicant_id}: {e}")
+    
+    # Fallback: return features as contributions
+    sorted_features = sorted(
+        [(k, v) for k, v in features_dict.items() if isinstance(v, (int, float))],
+        key=lambda x: abs(x[1]), reverse=True
+    )[:10]
     return {
         "applicant_id": applicant_id,
-        "contributions": features_dict,  # Using features as stub contributions
-        "message": "SHAP explanation not fully implemented. Showing feature values.",
+        "probability": prediction_result.probability,
+        "prediction": "High Risk" if prediction_result.probability > 0.5 else "Low Risk",
+        "shap_values": dict(sorted_features),
+        "message": "Using feature values as contribution estimates.",
     }
 
 

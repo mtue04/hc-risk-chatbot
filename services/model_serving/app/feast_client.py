@@ -97,7 +97,14 @@ class FeastClient:
                 del features_dict["SK_ID_CURR"]
 
             # Extract values (Feast returns lists, we want first element)
-            result = {k: v[0] if isinstance(v, list) else v for k, v in features_dict.items()}
+            # Replace None/NaN with 0.0 for model compatibility
+            result = {}
+            for k, v in features_dict.items():
+                val = v[0] if isinstance(v, list) else v
+                if val is None or (isinstance(val, float) and np.isnan(val)):
+                    result[k] = 0.0
+                else:
+                    result[k] = float(val)
 
             logger.info(f"Fetched {len(result)} features for applicant {applicant_id}")
             return result
@@ -141,6 +148,9 @@ class FeastClient:
             # Remove SK_ID_CURR
             if "SK_ID_CURR" in features_df.columns:
                 features_df = features_df.drop(columns=["SK_ID_CURR"])
+
+            # Fill NaN/None with 0.0 for model compatibility
+            features_df = features_df.fillna(0.0)
 
             # Convert to list of dicts
             result = features_df.to_dict("records")

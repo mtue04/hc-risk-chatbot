@@ -1,5 +1,6 @@
-# Environment and configuration files
-config/.env
+# Config folder - ignore all except example
+config/*
+!config/.env.example
 
 # Data files - exclude all data files from git
 data/

@@ -5,11 +5,16 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 from .graph import get_chatbot_graph
+try:
+    from .multimodal import get_multimodal_processor
+    MULTIMODAL_AVAILABLE = True
+except ImportError:
+    MULTIMODAL_AVAILABLE = False
 
 logger = structlog.get_logger()
 
@@ -179,3 +184,112 @@ def get_conversation_history(session_id: str):
     ]
 
     return {"session_id": session_id, "messages": formatted}
+
+
+@app.post("/chat/multimodal")
+async def chat_multimodal(
+    question: str = Form(None),
+    audio: UploadFile = File(None),
+    image: UploadFile = File(None),
+    session_id: str = Form(None),
+    applicant_id: int = Form(None),
+):
+    """
+    Multimodal chat endpoint supporting voice and image input.
+    
+    Accepts:
+    - Text question (form field)
+    - Audio file for voice transcription (WAV, MP3, OGG, WEBM)
+    - Image file for document extraction (PNG, JPEG)
+    - Session ID for conversation continuity
+    - Applicant ID for focused analysis
+    
+    Returns standard chat response with processed multimodal context.
+    """
+    if not MULTIMODAL_AVAILABLE:
+        raise HTTPException(
+            status_code=501, 
+            detail="Multimodal processing not available. Install required dependencies."
+        )
+    
+    processor = get_multimodal_processor()
+    final_question = question or ""
+    extracted_context = None
+    
+    # Process audio if provided
+    if audio:
+        try:
+            audio_bytes = await audio.read()
+            transcription_result = await processor.transcribe_audio(audio_bytes)
+            
+            if "error" in transcription_result:
+                logger.warning(f"Audio transcription failed: {transcription_result['error']}")
+            else:
+                transcribed_text = transcription_result.get("text", "")
+                if transcribed_text:
+                    final_question = transcribed_text
+                    logger.info(f"Audio transcribed: {len(transcribed_text)} chars")
+        except Exception as e:
+            logger.error(f"Audio processing error: {e}")
+    
+    # Process document/image if provided
+    if image:
+        try:
+            file_bytes = await image.read()
+            filename = image.filename or "document"
+            
+            extraction_result = await processor.extract_text_from_file(file_bytes, filename)
+            
+            if "error" in extraction_result:
+                logger.warning(f"Document extraction failed: {extraction_result['error']}")
+            else:
+                extracted_context = extraction_result
+                logger.info(f"Document processed: {extraction_result.get('file_type', 'unknown')}")
+        except Exception as e:
+            logger.error(f"Document processing error: {e}")
+    
+    # Build question with context if document was processed
+    if extracted_context:
+        # Handle different return formats from multimodal processor
+        if "text" in extracted_context and extracted_context["text"]:
+            context_str = extracted_context["text"][:2000]
+        elif "data" in extracted_context:
+            context_str = str(extracted_context["data"])
+        elif "raw_text" in extracted_context and extracted_context["raw_text"]:
+            context_str = extracted_context["raw_text"][:2000]
+        elif "raw_response" in extracted_context:
+            context_str = extracted_context["raw_response"][:2000]
+        else:
+            context_str = str(extracted_context)
+            
+        if final_question:
+            final_question = f"{final_question}\n\n[Document content: {context_str}]"
+        else:
+            final_question = f"Analyze this document content and respond to any questions about it:\n\n{context_str}"
+        
+        logger.info(f"Document context added: {len(context_str)} chars")
+    
+    if not final_question:
+        raise HTTPException(
+            status_code=400,
+            detail="No question provided. Send text, audio, or image input."
+        )
+    
+    # Forward to regular chat endpoint
+    chat_request = ChatRequest(
+        question=final_question,
+        session_id=session_id,
+        applicant_id=applicant_id,
+    )
+    
+    response = await chat(chat_request)
+    
+    # Add multimodal metadata to response
+    return {
+        **response.model_dump(),
+        "multimodal_info": {
+            "audio_processed": audio is not None,
+            "image_processed": image is not None,
+            "extracted_context": extracted_context,
+        }
+    }

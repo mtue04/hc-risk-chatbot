@@ -103,7 +103,7 @@ services:
       - REDIS_PORT=${REDIS_PORT:-6379}
     volumes:
       - ./models:/app/models:ro
-      - ./services/feast/feature_repo:/opt/feast/feature_repo:ro
+      - ./services/feast/feature_repo:/opt/feast/feature_repo
     ports:
       - "8001:8000"
     healthcheck:
@@ -132,7 +132,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-homecredit_db}
       - POSTGRES_USER=${POSTGRES_USER:-hc_admin}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-hc_password}
-      - AIRFLOW_CONN_POSTGRES_HOMECREDIT=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/google-credentials.json
+    volumes:
+      - ./config/google-credentials.json:/app/credentials/google-credentials.json:ro
     ports:
       - "8500:8500"
     healthcheck:
@@ -156,8 +158,8 @@ services:
       dockerfile: Dockerfile
     container_name: hc-streamlit
     environment:
-      - CHATBOT_API_URL=http://chatbot:8500/chat
-      - MODEL_API_URL=http://model_serving:8000/health
+      - CHATBOT_API_URL=http://chatbot:8500
+      - MODEL_API_URL=http://model_serving:8000
     ports:
       - "8501:8501"
     restart: unless-stopped

@@ -17,7 +17,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from .tools import get_risk_prediction, query_applicant_data, generate_feature_plot
+from .tools import get_risk_prediction, query_applicant_data, generate_feature_plot, predict_hypothetical_applicant
+try:
+    from .chart_tools import analyze_and_visualize, generate_data_report
+    CHART_TOOLS_AVAILABLE = True
+except ImportError:
+    CHART_TOOLS_AVAILABLE = False
 
 logger = structlog.get_logger()
 
@@ -68,7 +73,13 @@ def create_chatbot_graph():
         get_risk_prediction,
         query_applicant_data,
         generate_feature_plot,
+        predict_hypothetical_applicant,
     ]
+    
+    # Add chart tools if available
+    if CHART_TOOLS_AVAILABLE:
+        tools.extend([analyze_and_visualize, generate_data_report])
+        logger.info("Chart analysis tools loaded")
 
     # Bind tools to LLM
     if llm:
@@ -77,27 +88,51 @@ def create_chatbot_graph():
         llm_with_tools = None
 
     # System prompt
-    SYSTEM_PROMPT = """You are an expert credit risk analyst assistant for Home Credit.
+    SYSTEM_PROMPT = """You are a senior credit risk data analyst at Home Credit with expertise in statistical analysis and data visualization.
 
-Your role is to help users understand credit risk predictions and applicant data through natural conversation.
+Your role is to help users understand credit risk predictions through data-driven insights and appropriate visualizations.
 
-You have access to the following tools:
-1. get_risk_prediction(applicant_id: int) - Get default probability and explanation for an applicant
-2. query_applicant_data(applicant_id: int, fields: list[str]) - Query specific applicant information
-3. generate_feature_plot(applicant_id: int, feature_names: list[str]) - Generate visualization
+## Available Tools:
+1. **get_risk_prediction(applicant_id)** - Get default probability with SHAP explanation
+2. **query_applicant_data(applicant_id, fields)** - Query applicant demographics and financials
+3. **generate_feature_plot(applicant_id, feature_names)** - Statistical comparison to population
+4. **analyze_and_visualize(analysis_type, feature_names, applicant_id)** - Smart chart selection:
+   - "distribution": histogram/box plot for data spread
+   - "comparison": grouped bar/radar for category comparison
+   - "correlation": scatter plot for relationships
+   - "risk_breakdown": SHAP feature importance
+5. **generate_data_report(applicant_id, report_type)** - Comprehensive analysis report
 
-Guidelines:
-- When users ask about a specific applicant, use the applicant ID (SK_ID_CURR)
-- Always explain predictions in business terms, not just technical metrics
-- When showing risk scores, contextualize them (e.g., "This is above/below average")
-- Use tools proactively to provide data-driven answers
-- If you don't have enough information, ask clarifying questions
-- Be concise but thorough in explanations
+## Data Analyst Guidelines:
 
-Remember:
-- Default probability > 50% indicates high risk
-- Top SHAP contributors show why the model made its prediction
-- External credit bureau scores (EXT_SOURCE_*) are very important features
+### When Analyzing Data:
+1. **ALWAYS explain WHAT** the data shows with specific numbers
+2. **ALWAYS explain WHY** it matters for credit risk
+3. **ALWAYS contextualize** numbers (percentile, vs average, risk implications)
+4. **ALWAYS choose the MOST APPROPRIATE** chart type for the question
+
+### Chart Selection:
+- Comparing categories → Bar chart or Radar
+- Showing distribution → Histogram or Box plot
+- Time trends → Line chart
+- Proportions/composition → Pie or Stacked bar
+- Relationships → Scatter plot with correlation
+- Risk breakdown → Waterfall or Feature importance bar
+
+### Insight Formatting:
+- Use specific numbers: "Income of $202,500 is 20% above average ($168,800)"
+- Use percentiles: "In the top 68% of income earners"
+- Connect to risk: "This factor DECREASES default risk"
+- Adapt language based on user input
+
+### Key Risk Indicators:
+- EXT_SOURCE_2/3: External credit scores (VERY important)
+- DAYS_BIRTH: Age (negative number, convert to years)
+- DAYS_EMPLOYED: Employment duration
+- Credit-to-income ratio
+- Default probability > 50% = High Risk
+
+Always be proactive: if user asks about risk, also show top contributing factors.
 """
 
     def should_continue(state: ChatState) -> Literal["tools", "end"]:
