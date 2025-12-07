@@ -1,0 +1,7 @@
+[UI]
+name = "Home Credit Risk Assistant"
+enable_emoji_picker = true
+logo = "assets/hc_logo.png"
+
+[CHAT]
+prompt = "You are chatting with the Home Credit Risk assistant."

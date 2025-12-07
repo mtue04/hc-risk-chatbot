@@ -152,16 +152,15 @@ services:
       model_serving:
         condition: service_healthy
 
-  streamlit:
+  chainlit:
     build:
-      context: ./services/streamlit
+      context: ./services/chainlit
       dockerfile: Dockerfile
-    container_name: hc-streamlit
+    container_name: hc-chainlit
     environment:
       - CHATBOT_API_URL=http://chatbot:8500
-      - MODEL_API_URL=http://model_serving:8000
     ports:
-      - "8501:8501"
+      - "8502:8502"
     restart: unless-stopped
     networks:
       - hc-network

@@ -11,7 +11,7 @@ The high‑level architecture (see `architecture.png`) is composed of:
 - **Feature store:** Feast managing offline/online features.
 - **Model serving:** FastAPI endpoint enriched with SHAP explanations.
 - **Chatbot server:** LangGraph workflow with Gemini, plus helper tools for queries, inference, and plotting.
-- **Interface:** Streamlit front end that surfaces chatbot insights to stakeholders.
+- **Interface:** A Chainlit front end (see `services/chainlit`) that provides a conversational UI on top of the LangGraph chatbot.
 
 ## Initial Setup Checklist
 
@@ -96,3 +96,15 @@ SELECT COUNT(*) FROM home_credit.credit_card_balance;
 ```
 
 Additional services (Airflow, Feast, model serving, chatbot UI) will return once the raw dataset ingestion is validated.
+
+### Chainlit UI
+
+After `docker compose up` brings the stack online, open `http://localhost:8502` to use the Chainlit chat client. The UI forwards every prompt to the LangGraph chatbot service (`services/chatbot`) and streams the answer back inside the conversation thread. Use the paperclip icon in the lower-left corner to upload PDFs, spreadsheets, screenshots, or short audio clips (WAV/MP3/WebM); the backend routes them through the multimodal endpoint for transcription/OCR before replying. (Chainlit OSS currently lacks a microphone button, so record audio locally and attach the file instead.)
+
+Sample prompts:
+- `What is the risk score for applicant 100001?`
+- `Explain the top risk factors for applicant 100002.`
+- `Compare income and credit between applicant 100002 and 100003.`
+- `Show applicant 100001's income vs population average.`
+- `Plot EXT_SOURCE_2 and EXT_SOURCE_3 distribution for applicant 100004.`
+- `Display credit-to-income comparison chart for applicant 100003.`

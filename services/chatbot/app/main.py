@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import base64
+import json
 import os
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -8,7 +10,7 @@ from uuid import uuid4
 import structlog
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import FileResponse
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
 
 from .graph import get_chatbot_graph
@@ -36,6 +38,34 @@ _conversations: Dict[str, List[Dict[str, Any]]] = {}
 # In-memory chart storage (separate from conversation to avoid token bloat)
 # Format: {thread_id: {step_number: {"path": str, "base64": str}}}
 _analysis_charts: Dict[str, Dict[int, Dict[str, str]]] = {}
+
+
+def _stringify_tool_content(content: Any) -> str:
+    """Convert tool message content into a stable string representation."""
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(content)
+    except Exception:
+        return str(content)
+
+
+def _attempt_parse_content(text: str) -> Optional[Any]:
+    """Attempt to parse serialized tool content back into Python objects."""
+    if not text:
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(stripped)
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        except Exception:
+            continue
+    return None
 
 
 def _enrich_step_results_with_charts(
@@ -109,6 +139,7 @@ class ChatResponse(BaseModel):
     applicant_id: Optional[int] = None
     risk_probability: Optional[float] = None
     tool_outputs: Optional[List[Dict[str, Any]]] = None
+    tool_messages: Optional[List[Dict[str, Any]]] = None
     conversation_history: Optional[List[Dict[str, str]]] = None
 
 
@@ -189,6 +220,26 @@ async def chat(request: ChatRequest) -> ChatResponse:
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 tool_outputs.extend(msg.tool_calls)
 
+        # Collect tool message payloads for downstream consumers (UI rendering)
+        tool_messages_payload: List[Dict[str, Any]] = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                raw_text = _stringify_tool_content(msg.content)
+                if isinstance(msg.content, (dict, list)):
+                    parsed_output = msg.content
+                else:
+                    parsed_output = _attempt_parse_content(raw_text)
+
+                tool_messages_payload.append(
+                    {
+                        "tool_call_id": getattr(msg, "tool_call_id", None),
+                        "tool_name": getattr(msg, "tool_name", None)
+                        or getattr(msg, "name", None),
+                        "raw_text": raw_text,
+                        "parsed_output": parsed_output,
+                    }
+                )
+
         # Try to extract risk score from tool outputs or state
         risk_probability = result.get("risk_score")
 
@@ -203,6 +254,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             session=session_id,
             num_messages=len(messages),
             has_tool_calls=len(tool_outputs) > 0,
+            tool_messages=len(tool_messages_payload),
         )
 
         return ChatResponse(
@@ -211,6 +263,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             applicant_id=result.get("applicant_id"),
             risk_probability=risk_probability,
             tool_outputs=tool_outputs if tool_outputs else None,
+            tool_messages=tool_messages_payload if tool_messages_payload else None,
             conversation_history=formatted_history[-6:],  # Last 3 turns
         )
 
