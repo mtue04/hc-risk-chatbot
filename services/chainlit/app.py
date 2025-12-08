@@ -245,14 +245,13 @@ async def process_question(
         content=answer,
         elements=chart_elements or None,
     ).send()
-    await refresh_history_in_sidebar(session_id)
 
 
 @cl.on_chat_start
 async def start_chat():
     session_id = str(uuid4())
     cl.user_session.set("session_id", session_id)
-    await refresh_history_in_sidebar(session_id)
+    # await refresh_history_in_sidebar(session_id)
     examples_list = "\n".join(f"- {question}" for question in EXAMPLE_QUESTIONS)
     example_actions = [
         cl.Action(
