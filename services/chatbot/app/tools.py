@@ -338,6 +338,146 @@ def generate_feature_plot(
 
 
 @tool
+def explain_shap_values(applicant_id: int) -> dict[str, Any]:
+    """
+    Get SHAP values for an applicant and explain them in natural language.
+
+    This tool is designed to help normal users understand model predictions
+    by translating SHAP values into plain English explanations about which
+    factors increase or decrease credit risk and why.
+
+    Args:
+        applicant_id: The applicant ID (SK_ID_CURR) to explain
+
+    Returns:
+        Dictionary containing:
+        - shap_explanation: Natural language explanation of SHAP values
+        - top_factors: List of top factors with human-readable impact
+        - probability: Default probability
+        - detailed_contributions: Full SHAP contributions by feature
+    """
+    try:
+        # Get SHAP explanation from model API
+        explain_url = f"{MODEL_API_URL}/explain/applicant/{applicant_id}"
+        with httpx.Client(timeout=10.0) as client:
+            explain_response = client.get(explain_url)
+            explain_response.raise_for_status()
+            explanation = explain_response.json()
+
+        # Get prediction
+        pred_url = f"{MODEL_API_URL}/predict/applicant/{applicant_id}"
+        with httpx.Client(timeout=10.0) as client:
+            pred_response = client.get(pred_url)
+            pred_response.raise_for_status()
+            prediction_data = pred_response.json()
+
+        probability = prediction_data.get("probability", 0.0)
+
+        # Get SHAP values
+        shap_values = explanation.get("shap_values", {})
+
+        # Sort by absolute contribution
+        sorted_factors = sorted(
+            shap_values.items(),
+            key=lambda x: abs(x[1]) if isinstance(x[1], (int, float)) else 0,
+            reverse=True
+        )[:10]
+
+        # Build natural language explanation
+        explanation_parts = []
+        explanation_parts.append(
+            f"**Credit Risk Analysis for Applicant {applicant_id}**\n"
+        )
+        explanation_parts.append(
+            f"The model predicts a **{probability*100:.1f}% chance of default** "
+            f"({'HIGH RISK' if probability > 0.5 else 'LOW RISK'}).\n"
+        )
+
+        # Get baseline probability if available
+        base_prob = explanation.get("base_probability", 0.08)  # Default to ~8% if not available
+        explanation_parts.append(
+            f"The baseline probability for an average applicant is {base_prob*100:.1f}%.\n"
+        )
+
+        explanation_parts.append("\n**Key Factors Affecting This Prediction:**\n")
+
+        # Explain top factors in human language with probability contributions
+        for i, (feature, impact) in enumerate(sorted_factors[:5], 1):
+            if not isinstance(impact, (int, float)):
+                continue
+
+            direction = "INCREASES" if impact > 0 else "DECREASES"
+            # Convert impact to percentage points (impact is already in probability space: 0-1)
+            impact_pct = abs(impact) * 100
+
+            # Determine strength based on percentage point contribution
+            strength = "strongly" if impact_pct > 10 else "moderately" if impact_pct > 5 else "slightly"
+
+            # Make feature names more readable
+            readable_name = feature.replace("_", " ").title()
+
+            explanation_parts.append(
+                f"{i}. **{readable_name}** {strength} {direction} risk "
+                f"(impact: {impact:+.1%} or {impact*100:+.1f} percentage points)"
+            )
+
+        explanation_parts.append(
+            f"\n\n**Understanding the Impact Values:**\n"
+            "Impact values show how much each feature contributes to the default probability "
+            "compared to the baseline. For example, an impact of +5 percentage points means "
+            "this feature increases the default probability from the baseline by 5%. "
+            "These values are calibrated SHAP (SHapley Additive exPlanations) contributions "
+            "in probability space for accurate interpretation."
+        )
+
+        natural_explanation = "\n".join(explanation_parts)
+
+        # Format top factors with readable impact (in probability space)
+        top_factors_formatted = [
+            {
+                "feature": feature.replace("_", " ").title(),
+                "impact": float(impact) if isinstance(impact, (int, float)) else 0,  # Probability contribution (0-1 scale)
+                "impact_percentage_points": float(impact * 100) if isinstance(impact, (int, float)) else 0,  # As percentage points
+                "direction": "increases_risk" if impact > 0 else "decreases_risk",
+                "strength": "strong" if abs(impact) * 100 > 10 else "moderate" if abs(impact) * 100 > 5 else "slight"
+            }
+            for feature, impact in sorted_factors
+            if isinstance(impact, (int, float))
+        ]
+
+        result = {
+            "applicant_id": applicant_id,
+            "probability": probability,
+            "risk_level": "HIGH RISK" if probability > 0.5 else "LOW RISK",
+            "shap_explanation": natural_explanation,
+            "top_factors": top_factors_formatted,
+            "detailed_contributions": dict(sorted_factors),
+        }
+
+        logger.info(
+            "shap_explanation_generated",
+            applicant_id=applicant_id,
+            probability=probability,
+            num_factors=len(top_factors_formatted)
+        )
+
+        return result
+
+    except httpx.HTTPError as exc:
+        logger.error("shap_explain_api_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Could not fetch SHAP explanation: {str(exc)}",
+            "applicant_id": applicant_id,
+        }
+    except Exception as exc:
+        logger.error("shap_explain_tool_error", error=str(exc), applicant_id=applicant_id)
+        return {
+            "error": f"Unexpected error: {str(exc)}",
+            "applicant_id": applicant_id,
+        }
+
+
+@tool
 def predict_hypothetical_applicant(
     income: float,
     credit_amount: float,

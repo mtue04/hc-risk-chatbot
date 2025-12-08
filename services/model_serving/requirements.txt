@@ -6,6 +6,7 @@ lightgbm
 scikit-learn
 numpy==1.26.4
 pandas
+scipy
 shap
 python-multipart
 joblib
