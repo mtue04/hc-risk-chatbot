@@ -17,7 +17,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from .tools import get_risk_prediction, query_applicant_data, generate_feature_plot, predict_hypothetical_applicant
+from .tools import get_risk_prediction, query_applicant_data, generate_feature_plot, predict_hypothetical_applicant, explain_shap_values
 try:
     from .chart_tools import analyze_and_visualize, generate_data_report
     CHART_TOOLS_AVAILABLE = True
@@ -44,6 +44,12 @@ class ChatState(TypedDict):
 
     last_tool_output: dict | None
     """Output from the most recent tool call."""
+
+    requires_analysis: bool
+    """Whether the query requires multi-step data analysis."""
+
+    analysis_request: str | None
+    """The extracted analysis request if multi-step analysis is needed."""
 
 
 def create_chatbot_graph():
@@ -74,8 +80,9 @@ def create_chatbot_graph():
         query_applicant_data,
         generate_feature_plot,
         predict_hypothetical_applicant,
+        explain_shap_values,  # New SHAP explanation tool
     ]
-    
+
     # Add chart tools if available
     if CHART_TOOLS_AVAILABLE:
         tools.extend([analyze_and_visualize, generate_data_report])
@@ -96,12 +103,13 @@ Your role is to help users understand credit risk predictions through data-drive
 1. **get_risk_prediction(applicant_id)** - Get default probability with SHAP explanation
 2. **query_applicant_data(applicant_id, fields)** - Query applicant demographics and financials
 3. **generate_feature_plot(applicant_id, feature_names)** - Statistical comparison to population
-4. **analyze_and_visualize(analysis_type, feature_names, applicant_id)** - Smart chart selection:
+4. **explain_shap_values(applicant_id)** - Get natural language explanation of SHAP values for non-technical users
+5. **analyze_and_visualize(analysis_type, feature_names, applicant_id)** - Smart chart selection:
    - "distribution": histogram/box plot for data spread
    - "comparison": grouped bar/radar for category comparison
    - "correlation": scatter plot for relationships
    - "risk_breakdown": SHAP feature importance
-5. **generate_data_report(applicant_id, report_type)** - Comprehensive analysis report
+6. **generate_data_report(applicant_id, report_type)** - Comprehensive analysis report
 
 ## Data Analyst Guidelines:
 
@@ -125,6 +133,12 @@ Your role is to help users understand credit risk predictions through data-drive
 - Connect to risk: "This factor DECREASES default risk"
 - Adapt language based on user input
 
+### When to Use explain_shap_values:
+- User asks "why" was this applicant classified as risky/safe
+- User wants to understand model prediction in plain English
+- User is non-technical and needs simple explanation
+- User asks about factors affecting the credit decision
+
 ### Key Risk Indicators:
 - EXT_SOURCE_2/3: External credit scores (VERY important)
 - DAYS_BIRTH: Age (negative number, convert to years)
@@ -134,6 +148,73 @@ Your role is to help users understand credit risk predictions through data-drive
 
 Always be proactive: if user asks about risk, also show top contributing factors.
 """
+
+    def route_query(state: ChatState) -> Literal["agent", "analysis_subgraph"]:
+        """
+        Route user query to either normal chat agent or multi-step analysis subgraph.
+
+        Uses LLM to intelligently determine if the query requires:
+        - Normal chat flow with tools (specific applicant queries, SHAP explanations, etc.)
+        - Multi-step data analysis workflow (trends, patterns, comprehensive explorations)
+
+        Args:
+            state: Current conversation state
+
+        Returns:
+            "agent" for normal chatbot flow, "analysis_subgraph" for multi-step analysis
+        """
+        messages = state["messages"]
+        if not messages:
+            return "agent"
+
+        # Get the last user message
+        last_message = messages[-1]
+        if not isinstance(last_message, HumanMessage):
+            return "agent"
+
+        query = last_message.content
+
+        # If no LLM, default to normal agent
+        if not llm:
+            return "agent"
+
+        # Use LLM to classify the query
+        routing_prompt = f"""You are a query classifier. Determine if the user's question requires:
+A) Normal chat with tools (for specific applicant queries, SHAP explanations, quick lookups)
+B) Multi-step data analysis workflow (for comprehensive analysis, trends, patterns across dataset)
+
+User Question: {query}
+
+Examples of Type A (normal chat):
+- "What is the risk for applicant 12345?"
+- "Explain why applicant 67890 was classified as high risk"
+- "Show me the SHAP values for this person"
+- "What are the top factors for applicant X?"
+
+Examples of Type B (multi-step analysis):
+- "Analyze trends in default rates over time"
+- "Compare income distributions between defaulters and non-defaulters"
+- "Find insights about what factors lead to high risk"
+- "Explore patterns in the dataset"
+- "Show me comprehensive analysis of age groups"
+
+Respond with ONLY one word: "NORMAL" or "ANALYSIS"
+"""
+
+        try:
+            response = llm.invoke([HumanMessage(content=routing_prompt)])
+            decision = response.content.strip().upper()
+
+            if "ANALYSIS" in decision:
+                logger.info("routing_to_analysis_subgraph", query=query)
+                return "analysis_subgraph"
+            else:
+                logger.info("routing_to_normal_agent", query=query)
+                return "agent"
+        except Exception as exc:
+            logger.error("routing_error", error=str(exc))
+            # Default to normal agent on error
+            return "agent"
 
     def should_continue(state: ChatState) -> Literal["tools", "end"]:
         """
@@ -194,19 +275,138 @@ Always be proactive: if user asks about risk, also show top contributing factors
 
         return {"messages": [response]}
 
+    def analysis_subgraph_node(state: ChatState) -> dict:
+        """
+        Execute the multi-step analysis subgraph.
+
+        This node invokes the analysis workflow for complex data exploration queries.
+
+        Args:
+            state: Current conversation state
+
+        Returns:
+            Updated state with analysis summary as an AI message
+        """
+        from .analysis_graph import get_analysis_graph
+        from .analysis_state import AnalysisState
+
+        messages = state["messages"]
+        last_message = messages[-1] if messages else None
+
+        if not isinstance(last_message, HumanMessage):
+            return {
+                "messages": [AIMessage(content="No user query found for analysis.")]
+            }
+
+        user_request = last_message.content
+
+        logger.info("executing_analysis_subgraph", request=user_request)
+
+        # Initialize analysis state
+        analysis_state: AnalysisState = {
+            "messages": [],
+            "user_request": user_request,
+            "schema_info": None,
+            "plan": None,
+            "current_step": 0,
+            "step_results": [],
+            "final_summary": None,
+            "workflow_status": "planning",
+        }
+
+        try:
+            # Get analysis graph (without checkpointing for inline execution)
+            from .analysis_nodes import (
+                schema_reader_node,
+                planner_node,
+                sql_generator_node,
+                data_analyzer_node,
+                vision_analyzer_node,
+                synthesizer_node,
+            )
+
+            # Create a simplified inline analysis workflow
+            # Read schema
+            analysis_state = {**analysis_state, **schema_reader_node(analysis_state)}
+
+            # Generate plan
+            analysis_state = {**analysis_state, **planner_node(analysis_state)}
+
+            # Auto-approve the plan for inline execution
+            if analysis_state.get("plan"):
+                analysis_state["plan"]["approved"] = True
+                analysis_state["workflow_status"] = "executing"
+                analysis_state["current_step"] = 1
+
+            # Execute each step
+            plan = analysis_state.get("plan", {})
+            steps = plan.get("steps", [])
+
+            for step_num in range(1, len(steps) + 1):
+                analysis_state["current_step"] = step_num
+
+                # SQL generation
+                sql_result = sql_generator_node(analysis_state)
+                analysis_state = {**analysis_state, **sql_result}
+
+                # Data analysis
+                data_result = data_analyzer_node(analysis_state)
+                analysis_state = {**analysis_state, **data_result}
+
+                # Vision analysis
+                vision_result = vision_analyzer_node(analysis_state)
+                analysis_state = {**analysis_state, **vision_result}
+
+            # Synthesize final summary
+            final_result = synthesizer_node(analysis_state)
+            analysis_state = {**analysis_state, **final_result}
+
+            summary = analysis_state.get("final_summary", "Analysis completed.")
+
+            logger.info("analysis_subgraph_completed", num_steps=len(steps))
+
+            return {
+                "messages": [AIMessage(content=summary)]
+            }
+
+        except Exception as exc:
+            logger.error("analysis_subgraph_error", error=str(exc))
+            return {
+                "messages": [AIMessage(
+                    content=f"I encountered an error during multi-step analysis: {str(exc)}"
+                )]
+            }
+
     # Build the graph
     workflow = StateGraph(ChatState)
 
     # Add nodes
+    workflow.add_node("router", lambda s: s)  # Pass-through node for routing
     workflow.add_node("agent", call_model)
-    
+    workflow.add_node("analysis_subgraph", analysis_subgraph_node)
+
     if llm_with_tools:
         tool_node = ToolNode(tools)
         workflow.add_node("tools", tool_node)
 
     # Add edges
-    workflow.add_edge(START, "agent")
-    
+    # Start -> Router (determines if normal chat or analysis)
+    workflow.add_edge(START, "router")
+
+    # Router -> Agent or Analysis Subgraph
+    workflow.add_conditional_edges(
+        "router",
+        route_query,
+        {
+            "agent": "agent",
+            "analysis_subgraph": "analysis_subgraph",
+        },
+    )
+
+    # Analysis subgraph goes directly to END
+    workflow.add_edge("analysis_subgraph", END)
+
+    # Agent continues with tools or ends
     if llm_with_tools:
         workflow.add_conditional_edges(
             "agent",

@@ -157,6 +157,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
         "applicant_id": request.applicant_id,
         "risk_score": None,
         "last_tool_output": None,
+        "requires_analysis": False,  # Will be determined by router
+        "analysis_request": None,
     }
 
     try:
