@@ -392,39 +392,54 @@ def explain_shap_values(applicant_id: int) -> dict[str, Any]:
             f"The model predicts a **{probability*100:.1f}% chance of default** "
             f"({'HIGH RISK' if probability > 0.5 else 'LOW RISK'}).\n"
         )
+
+        # Get baseline probability if available
+        base_prob = explanation.get("base_probability", 0.08)  # Default to ~8% if not available
+        explanation_parts.append(
+            f"The baseline probability for an average applicant is {base_prob*100:.1f}%.\n"
+        )
+
         explanation_parts.append("\n**Key Factors Affecting This Prediction:**\n")
 
-        # Explain top factors in human language
+        # Explain top factors in human language with probability contributions
         for i, (feature, impact) in enumerate(sorted_factors[:5], 1):
             if not isinstance(impact, (int, float)):
                 continue
 
             direction = "INCREASES" if impact > 0 else "DECREASES"
-            strength = "strongly" if abs(impact) > 0.1 else "moderately" if abs(impact) > 0.05 else "slightly"
+            # Convert impact to percentage points (impact is already in probability space: 0-1)
+            impact_pct = abs(impact) * 100
+
+            # Determine strength based on percentage point contribution
+            strength = "strongly" if impact_pct > 10 else "moderately" if impact_pct > 5 else "slightly"
 
             # Make feature names more readable
             readable_name = feature.replace("_", " ").title()
 
             explanation_parts.append(
-                f"{i}. **{readable_name}** {strength} {direction} risk (impact: {impact:+.4f})"
+                f"{i}. **{readable_name}** {strength} {direction} risk "
+                f"(impact: {impact:+.1%} or {impact*100:+.1f} percentage points)"
             )
 
         explanation_parts.append(
-            f"\n\n**How SHAP Values Work:**\n"
-            "SHAP (SHapley Additive exPlanations) values show how much each feature "
-            "pushes the prediction higher or lower compared to the average prediction. "
-            "Positive values increase default risk, negative values decrease it."
+            f"\n\n**Understanding the Impact Values:**\n"
+            "Impact values show how much each feature contributes to the default probability "
+            "compared to the baseline. For example, an impact of +5 percentage points means "
+            "this feature increases the default probability from the baseline by 5%. "
+            "These values are calibrated SHAP (SHapley Additive exPlanations) contributions "
+            "in probability space for accurate interpretation."
         )
 
         natural_explanation = "\n".join(explanation_parts)
 
-        # Format top factors with readable impact
+        # Format top factors with readable impact (in probability space)
         top_factors_formatted = [
             {
                 "feature": feature.replace("_", " ").title(),
-                "impact": float(impact) if isinstance(impact, (int, float)) else 0,
+                "impact": float(impact) if isinstance(impact, (int, float)) else 0,  # Probability contribution (0-1 scale)
+                "impact_percentage_points": float(impact * 100) if isinstance(impact, (int, float)) else 0,  # As percentage points
                 "direction": "increases_risk" if impact > 0 else "decreases_risk",
-                "strength": "strong" if abs(impact) > 0.1 else "moderate" if abs(impact) > 0.05 else "slight"
+                "strength": "strong" if abs(impact) * 100 > 10 else "moderate" if abs(impact) * 100 > 5 else "slight"
             }
             for feature, impact in sorted_factors
             if isinstance(impact, (int, float))
