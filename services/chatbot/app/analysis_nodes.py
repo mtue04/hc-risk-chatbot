@@ -65,7 +65,7 @@ def get_db_connection():
 def get_llm() -> ChatGoogleGenerativeAI | None:
     """Get configured Gemini LLM instance."""
     gemini_api_key = os.getenv("GEMINI_API_KEY")
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     if not gemini_api_key or gemini_api_key == "changeme":
         logger.warning("GEMINI_API_KEY not configured")

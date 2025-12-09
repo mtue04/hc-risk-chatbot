@@ -371,7 +371,7 @@ POSTGRES_PASSWORD=hc_password
 
 # LLM configuration
 GEMINI_API_KEY=your-api-key
-GEMINI_MODEL=gemini-2.0-flash
+GEMINI_MODEL=gemini-2.5-flash
 
 # Chart output directory
 CHART_OUTPUT_DIR=/tmp/analysis_charts

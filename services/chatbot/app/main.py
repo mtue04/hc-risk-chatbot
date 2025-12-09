@@ -183,20 +183,58 @@ async def chat(request: ChatRequest) -> ChatResponse:
             )
 
         last_ai_message = ai_messages[-1]
+        # Handle case where content is a list (Gemini multi-part response)
         answer = last_ai_message.content
+        if isinstance(answer, list):
+            answer = "\n".join(str(part) for part in answer)
+        elif not isinstance(answer, str):
+            answer = str(answer)
 
-        # Extract tool outputs if any
+        # Extract tool outputs - both the call metadata AND the actual results
         tool_outputs = []
-        for msg in reversed(messages):
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                tool_outputs.extend(msg.tool_calls)
+        for msg in messages:
+            # Check for tool results (ToolMessage in LangChain)
+            # ToolMessage has .content with the actual tool output
+            msg_type = type(msg).__name__
+            if msg_type == "ToolMessage":
+                try:
+                    # Tool results are often JSON strings - try to parse
+                    import json
+                    content = msg.content
+                    if isinstance(content, str):
+                        try:
+                            parsed = json.loads(content)
+                            tool_outputs.append(parsed)
+                        except json.JSONDecodeError:
+                            # If not JSON, include as-is
+                            tool_outputs.append({"raw_output": content})
+                    else:
+                        tool_outputs.append(content if isinstance(content, dict) else {"raw_output": str(content)})
+                except Exception as e:
+                    logger.warning("tool_output_parse_error", error=str(e))
+            # Also include tool call metadata for reference
+            elif hasattr(msg, "tool_calls") and msg.tool_calls:
+                for call in msg.tool_calls:
+                    tool_outputs.append({
+                        "tool_name": call.get("name"),
+                        "tool_args": call.get("args"),
+                        "call_id": call.get("id"),
+                    })
 
         # Try to extract risk score from tool outputs or state
         risk_probability = result.get("risk_score")
 
         # Format conversation history for response
+        def normalize_content(content):
+            """Normalize content - handle list from Gemini API."""
+            if isinstance(content, list):
+                return "\n".join(str(part) for part in content)
+            elif not isinstance(content, str):
+                return str(content) if content else ""
+            return content
+        
         formatted_history = [
-            {"role": "human" if isinstance(msg, HumanMessage) else "ai", "content": msg.content}
+            {"role": "human" if isinstance(msg, HumanMessage) else "ai", "content": normalize_content(msg.content)}
             for msg in messages
         ]
 

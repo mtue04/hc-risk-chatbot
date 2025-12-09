@@ -61,7 +61,7 @@ def create_chatbot_graph():
     """
     # Initialize Gemini LLM
     gemini_api_key = os.getenv("GEMINI_API_KEY")
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")  # flash has higher rate limits
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # flash has higher rate limits
     if not gemini_api_key or gemini_api_key == "changeme":
         logger.warning("GEMINI_API_KEY not configured, using mock responses")
         llm = None

@@ -180,7 +180,7 @@ def analyze_and_visualize(
                 cursor.execute(query)
                 row = cursor.fetchone()
                 
-                stats[feature] = {
+                feature_stats = {
                     "mean": float(row[0]) if row[0] else None,
                     "std": float(row[1]) if row[1] else None,
                     "min": float(row[2]) if row[2] else None,
@@ -191,6 +191,52 @@ def analyze_and_visualize(
                     "count": int(row[7]) if row[7] else 0,
                 }
                 
+                # Compute histogram bins (20 bins)
+                # Use IQR method to determine bin range to handle outliers
+                if feature_stats["q25"] is not None and feature_stats["q75"] is not None:
+                    iqr = feature_stats["q75"] - feature_stats["q25"]
+                    # Use 1.5 * IQR for sensible range (exclude extreme outliers)
+                    hist_min = max(feature_stats["min"], feature_stats["q25"] - 1.5 * iqr)
+                    hist_max = min(feature_stats["max"], feature_stats["q75"] + 1.5 * iqr)
+                else:
+                    hist_min = feature_stats["min"]
+                    hist_max = feature_stats["max"]
+                
+                num_bins = 20
+                if hist_min is not None and hist_max is not None and hist_max > hist_min:
+                    bin_width = (hist_max - hist_min) / num_bins
+                    
+                    # Query to get histogram bin counts
+                    bins_query = f"""
+                        SELECT 
+                            width_bucket({quoted_feature}, %s, %s, %s) as bucket,
+                            COUNT(*) as freq
+                        FROM home_credit.application_train
+                        WHERE {quoted_feature} IS NOT NULL 
+                          AND {quoted_feature} BETWEEN %s AND %s
+                        GROUP BY bucket
+                        ORDER BY bucket
+                    """
+                    cursor.execute(bins_query, (hist_min, hist_max, num_bins, hist_min, hist_max))
+                    bin_rows = cursor.fetchall()
+                    
+                    # Build histogram bins array
+                    histogram_bins = []
+                    bin_counts = {r[0]: r[1] for r in bin_rows}
+                    
+                    for i in range(1, num_bins + 1):
+                        bin_start = hist_min + (i - 1) * bin_width
+                        bin_end = hist_min + i * bin_width
+                        histogram_bins.append({
+                            "bin": i,
+                            "range_start": round(bin_start, 2),
+                            "range_end": round(bin_end, 2),
+                            "count": bin_counts.get(i, 0),
+                            "label": f"{bin_start/1000:.0f}K" if bin_start >= 1000 else f"{bin_start:.0f}"
+                        })
+                    
+                    feature_stats["histogram_bins"] = histogram_bins
+                
                 # Add applicant's value if provided
                 if applicant_id:
                     cursor.execute(f"""
@@ -200,7 +246,7 @@ def analyze_and_visualize(
                     """, (applicant_id,))
                     app_row = cursor.fetchone()
                     if app_row:
-                        stats[feature]["applicant_value"] = float(app_row[0]) if app_row[0] else None
+                        feature_stats["applicant_value"] = float(app_row[0]) if app_row[0] else None
                         # Calculate percentile
                         if app_row[0]:
                             cursor.execute(f"""
@@ -212,7 +258,9 @@ def analyze_and_visualize(
                                 WHERE {quoted_feature} <= %s AND {quoted_feature} IS NOT NULL
                             """, (app_row[0],))
                             pct = cursor.fetchone()
-                            stats[feature]["percentile"] = float(pct[0]) if pct[0] else None
+                            feature_stats["percentile"] = float(pct[0]) if pct[0] else None
+                
+                stats[feature] = feature_stats
             
             result["statistics"] = stats
             result["insights"] = generate_insight_text(
@@ -272,23 +320,72 @@ def analyze_and_visualize(
                 
         elif analysis_type == "correlation":
             if len(feature_names) >= 2:
-                f1, f2 = f'"{feature_names[0]}"', f'"{feature_names[1]}"'
-                cursor.execute(f"""
-                    SELECT CORR({f1}, {f2})
-                    FROM home_credit.application_train
-                    WHERE {f1} IS NOT NULL AND {f2} IS NOT NULL
-                """)
-                corr = cursor.fetchone()
-                result["statistics"] = {
-                    "correlation": float(corr[0]) if corr[0] else None,
-                    "feature_x": feature_names[0],
-                    "feature_y": feature_names[1],
-                }
-                result["chart_type"] = "scatter"
-                result["insights"] = generate_insight_text(
-                    "correlation", 
-                    {"correlation": float(corr[0]) if corr[0] else 0}
-                )
+                if len(feature_names) == 2:
+                    # Scatter plot for 2 features - sample data points
+                    f1, f2 = f'"{feature_names[0]}"', f'"{feature_names[1]}"'
+                    
+                    # Get correlation value
+                    cursor.execute(f"""
+                        SELECT CORR({f1}, {f2})
+                        FROM home_credit.application_train
+                        WHERE {f1} IS NOT NULL AND {f2} IS NOT NULL
+                    """)
+                    corr = cursor.fetchone()
+                    
+                    # Sample 200 points for scatter plot
+                    cursor.execute(f"""
+                        SELECT {f1}, {f2}
+                        FROM home_credit.application_train
+                        WHERE {f1} IS NOT NULL AND {f2} IS NOT NULL
+                        ORDER BY RANDOM()
+                        LIMIT 200
+                    """)
+                    points = cursor.fetchall()
+                    
+                    result["statistics"] = {
+                        "correlation": float(corr[0]) if corr[0] else None,
+                        "feature_x": feature_names[0],
+                        "feature_y": feature_names[1],
+                    }
+                    result["chart_data"] = {
+                        "x": [float(p[0]) for p in points],
+                        "y": [float(p[1]) for p in points],
+                        "labels": [f"Point {i+1}" for i in range(len(points))],
+                    }
+                    result["chart_type"] = "scatter"
+                    result["insights"] = generate_insight_text(
+                        "correlation", 
+                        {"correlation": float(corr[0]) if corr[0] else 0}
+                    )
+                else:
+                    # Heatmap for 3+ features - correlation matrix
+                    n = len(feature_names)
+                    correlation_matrix = [[0.0] * n for _ in range(n)]
+                    
+                    for i, f1 in enumerate(feature_names):
+                        for j, f2 in enumerate(feature_names):
+                            if i == j:
+                                correlation_matrix[i][j] = 1.0
+                            elif j > i:
+                                q_f1, q_f2 = f'"{f1}"', f'"{f2}"'
+                                cursor.execute(f"""
+                                    SELECT CORR({q_f1}, {q_f2})
+                                    FROM home_credit.application_train
+                                    WHERE {q_f1} IS NOT NULL AND {q_f2} IS NOT NULL
+                                """)
+                                c = cursor.fetchone()
+                                val = float(c[0]) if c[0] else 0.0
+                                correlation_matrix[i][j] = round(val, 3)
+                                correlation_matrix[j][i] = round(val, 3)
+                    
+                    result["statistics"] = {"correlation_matrix": correlation_matrix}
+                    result["chart_data"] = {
+                        "values": correlation_matrix,
+                        "xLabels": feature_names,
+                        "yLabels": feature_names,
+                    }
+                    result["chart_type"] = "heatmap"
+                    result["insights"] = f"Correlation matrix for {len(feature_names)} features computed."
             else:
                 result["error"] = "Need at least 2 features for correlation analysis"
         

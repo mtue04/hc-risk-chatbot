@@ -70,7 +70,7 @@ class MultimodalProcessor:
             try:
                 import google.generativeai as genai
                 genai.configure(api_key=GEMINI_API_KEY)
-                self._gemini_model = genai.GenerativeModel("gemini-2.0-flash")
+                self._gemini_model = genai.GenerativeModel("gemini-2.5-flash")
                 logger.info("Gemini Vision model initialized")
             except ImportError:
                 logger.warning("google-generativeai not installed")

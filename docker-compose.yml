@@ -152,16 +152,15 @@ services:
       model_serving:
         condition: service_healthy
 
-  streamlit:
+  frontend:
     build:
-      context: ./services/streamlit
+      context: ./services/frontend
       dockerfile: Dockerfile
-    container_name: hc-streamlit
+    container_name: hc-frontend
     environment:
       - CHATBOT_API_URL=http://chatbot:8500
-      - MODEL_API_URL=http://model_serving:8000
     ports:
-      - "8501:8501"
+      - "3000:3000"
     restart: unless-stopped
     networks:
       - hc-network

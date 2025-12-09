@@ -1,0 +1,175 @@
+.messageContainer {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 20px;
+    animation: slideUp var(--transition-normal) ease;
+}
+
+.user {
+    flex-direction: row-reverse;
+}
+
+.assistant {
+    flex-direction: row;
+}
+
+/* Avatar */
+.avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.avatarUser {
+    background: var(--hc-red);
+    color: white;
+}
+
+.avatarBot {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+/* Message Bubble */
+.bubble {
+    max-width: 75%;
+    padding: 14px 18px;
+    border-radius: 16px;
+    position: relative;
+}
+
+.bubbleUser {
+    background: var(--hc-red);
+    color: white;
+    border-radius: 16px 16px 4px 16px;
+}
+
+.bubbleBot {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 16px 16px 16px 4px;
+}
+
+/* Text */
+.text {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+/* Markdown Styles */
+.markdown {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-primary);
+}
+
+.paragraph {
+    margin: 0 0 12px 0;
+}
+
+.paragraph:last-child {
+    margin-bottom: 0;
+}
+
+.bold {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.italic {
+    font-style: italic;
+    color: var(--text-secondary);
+}
+
+.code {
+    background: var(--bg-input);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Fira Code', 'Monaco', monospace;
+    font-size: 13px;
+    color: var(--hc-red-light);
+}
+
+.pre {
+    background: var(--bg-input);
+    padding: 12px 16px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 12px 0;
+}
+
+.pre code {
+    background: transparent;
+    padding: 0;
+}
+
+.list,
+.orderedList {
+    margin: 8px 0;
+    padding-left: 20px;
+}
+
+.listItem {
+    margin: 4px 0;
+}
+
+.heading1 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 16px 0 8px 0;
+    color: var(--text-primary);
+}
+
+.heading2 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 14px 0 6px 0;
+    color: var(--text-primary);
+}
+
+.heading3 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 12px 0 4px 0;
+    color: var(--text-primary);
+}
+
+/* Charts Container */
+.chartsContainer {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* Timestamp */
+.timestamp {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    opacity: 0.7;
+}
+
+.bubbleUser .timestamp {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+/* Animation */
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}

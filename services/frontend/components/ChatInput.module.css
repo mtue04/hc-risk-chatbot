@@ -1,0 +1,326 @@
+.container {
+    position: relative;
+    width: 100%;
+}
+
+/* File Preview */
+.filePreview {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    animation: slideUp var(--transition-fast) ease;
+}
+
+.fileInfo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.fileInfo span {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.removeFile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.removeFile:hover {
+    background: var(--bg-hover);
+    color: var(--hc-red);
+}
+
+/* Recording Container */
+.recordingContainer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    background: var(--bg-input);
+    border: 1px solid var(--hc-red);
+    border-radius: 16px;
+    box-shadow: 0 0 20px var(--glow-red);
+}
+
+.recordingIndicator {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.recordingDot {
+    width: 10px;
+    height: 10px;
+    background: var(--hc-red);
+    border-radius: 50%;
+    animation: pulse 1s infinite;
+}
+
+.recordingTime {
+    font-size: 18px;
+    font-weight: 600;
+    font-family: monospace;
+    color: var(--text-primary);
+}
+
+.recordingText {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.recordingActions {
+    display: flex;
+    gap: 12px;
+}
+
+.cancelBtn,
+.stopBtn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.cancelBtn {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+
+.cancelBtn:hover {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+}
+
+.stopBtn {
+    background: var(--hc-red);
+    color: white;
+}
+
+.stopBtn:hover {
+    background: var(--hc-red-dark);
+}
+
+/* Input Wrapper */
+.inputWrapper {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: 16px;
+    transition: all var(--transition-fast);
+}
+
+.inputWrapper:focus-within {
+    border-color: var(--hc-red);
+    box-shadow: 0 0 0 3px rgba(227, 30, 36, 0.1);
+}
+
+/* Popover Container */
+.popoverContainer {
+    position: relative;
+}
+
+/* Attach Button */
+.attachBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.attachBtn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+}
+
+.attachBtnActive {
+    background: var(--hc-red);
+    color: white;
+    border-color: var(--hc-red);
+}
+
+.attachBtnActive:hover {
+    background: var(--hc-red-dark);
+}
+
+.rotated {
+    transform: rotate(45deg);
+    transition: transform var(--transition-fast);
+}
+
+/* Popover Menu */
+.popover {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 8px;
+    min-width: 160px;
+    box-shadow: var(--shadow-soft);
+    animation: slideUp var(--transition-fast) ease;
+    z-index: 100;
+}
+
+.popoverItem {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    text-align: left;
+}
+
+.popoverItem:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.popoverItem:hover svg {
+    color: var(--hc-red);
+}
+
+/* Textarea */
+.textarea {
+    flex: 1;
+    min-height: 36px;
+    max-height: 150px;
+    padding: 8px 4px;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+}
+
+.textarea::placeholder {
+    color: var(--text-muted);
+}
+
+.textarea:disabled {
+    opacity: 0.5;
+}
+
+/* Send Button */
+.sendBtn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: var(--bg-hover);
+    border: none;
+    border-radius: 10px;
+    color: var(--text-muted);
+    cursor: not-allowed;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.sendBtnActive {
+    background: var(--hc-red);
+    color: white;
+    cursor: pointer;
+    box-shadow: 0 2px 8px var(--glow-red);
+}
+
+.sendBtnActive:hover {
+    background: var(--hc-red-dark);
+    transform: scale(1.05);
+}
+
+.sendBtnActive:active {
+    transform: scale(0.95);
+}
+
+.spinning {
+    animation: spin 1s linear infinite;
+}
+
+/* Hidden Input */
+.hiddenInput {
+    display: none;
+}
+
+/* Animations */
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.4;
+    }
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
