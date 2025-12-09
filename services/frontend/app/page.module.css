@@ -21,6 +21,15 @@
     padding: 24px 48px;
 }
 
+/* Analysis Container */
+.analysisContainer {
+    padding: 0 48px 16px;
+    max-width: 900px;
+    margin: 0 auto;
+    width: 100%;
+    animation: fadeIn var(--transition-normal) ease;
+}
+
 /* Welcome Screen */
 .welcome {
     height: 100%;

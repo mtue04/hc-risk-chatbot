@@ -357,6 +357,9 @@ Respond with ONLY one word: "NORMAL" or "ANALYSIS"
             plan = analysis_state.get("plan", {})
             steps = plan.get("steps", [])
 
+            # Collect messages to stream (including step-by-step results)
+            step_messages = []
+
             for step_num in range(1, len(steps) + 1):
                 analysis_state["current_step"] = step_num
 
@@ -372,6 +375,36 @@ Respond with ONLY one word: "NORMAL" or "ANALYSIS"
                 vision_result = vision_analyzer_node(analysis_state)
                 analysis_state = {**analysis_state, **vision_result}
 
+                # Get the completed step result
+                step_results = analysis_state.get("step_results", [])
+                if step_results and len(step_results) >= step_num:
+                    step_result = step_results[step_num - 1]
+
+                    # Read chart if available
+                    import os
+                    import base64
+                    chart_path = step_result.get("chart_image_path")
+                    chart_base64 = None
+                    if chart_path and os.path.exists(chart_path):
+                        with open(chart_path, 'rb') as f:
+                            chart_base64 = base64.b64encode(f.read()).decode('utf-8')
+
+                    # Create a message with step result data (for streaming)
+                    step_msg = AIMessage(
+                        content=f"✓ Completed Step {step_num}: {step_result.get('insights', 'Analysis step completed')}",
+                        additional_kwargs={
+                            "step_result": {
+                                "step_number": step_num,
+                                "data_summary": step_result.get("data_summary", ""),
+                                "chart_type": step_result.get("chart_type", ""),
+                                "chart_image_base64": chart_base64,
+                                "insights": step_result.get("insights", ""),
+                            }
+                        }
+                    )
+                    step_messages.append(step_msg)
+                    logger.info("step_completed", step_num=step_num, has_chart=chart_base64 is not None)
+
             # Synthesize final summary
             final_result = synthesizer_node(analysis_state)
             analysis_state = {**analysis_state, **final_result}
@@ -380,8 +413,12 @@ Respond with ONLY one word: "NORMAL" or "ANALYSIS"
 
             logger.info("analysis_subgraph_completed", num_steps=len(steps))
 
+            # Add final summary message
+            step_messages.append(AIMessage(content=summary))
+
             return {
-                "messages": [AIMessage(content=summary)]
+                "messages": step_messages,  # Return all step messages for streaming
+                "requires_analysis": True,  # Flag for streaming endpoint to detect
             }
 
         except Exception as exc:

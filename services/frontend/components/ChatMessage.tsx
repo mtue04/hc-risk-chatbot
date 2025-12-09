@@ -5,12 +5,24 @@ import ReactMarkdown from 'react-markdown';
 import { User, Bot } from 'lucide-react';
 import styles from './ChatMessage.module.css';
 import ChartRenderer from './charts/ChartRenderer';
+import ToolCall from './ToolCall';
+import AnalysisStepResult from './AnalysisStepResult';
 
 export interface Message {
     role: 'user' | 'assistant';
     content: string;
     timestamp?: string;
     charts?: any[]; // Chart data from backend
+    tool_outputs?: any[]; // Raw tool outputs from backend
+    thinking?: string; // Thinking/reasoning process
+    analysis_steps?: Array<{
+        step_number: number;
+        description?: string;
+        data_summary?: string;
+        chart_type: string;
+        chart_image_base64?: string;
+        insights: string;
+    }>;
 }
 
 interface ChatMessageProps {
@@ -54,11 +66,39 @@ export default function ChatMessage({ message, index }: ChatMessageProps) {
                     </div>
                 )}
 
+                {/* Tool Calls - only for assistant messages */}
+                {!isUser && message.tool_outputs && message.tool_outputs.length > 0 && (
+                    <div className={styles.toolCallsContainer}>
+                        {message.tool_outputs.map((toolOutput, toolIndex) => (
+                            <ToolCall key={`${index}-tool-${toolIndex}`} toolOutput={toolOutput} index={toolIndex} />
+                        ))}
+                    </div>
+                )}
+
                 {/* Charts - only for assistant messages */}
                 {!isUser && message.charts && message.charts.length > 0 && (
                     <div className={styles.chartsContainer}>
                         {message.charts.map((chart, chartIndex) => (
                             <ChartRenderer key={`${index}-chart-${chartIndex}`} chartData={chart} />
+                        ))}
+                    </div>
+                )}
+
+                {/* Analysis Steps - only for assistant messages */}
+                {!isUser && message.analysis_steps && message.analysis_steps.length > 0 && (
+                    <div className={styles.analysisStepsContainer} style={{ marginTop: '1rem' }}>
+                        {message.analysis_steps.map((step) => (
+                            <AnalysisStepResult
+                                key={`${index}-step-${step.step_number}`}
+                                step={{
+                                    step_number: step.step_number,
+                                    description: step.description,
+                                    chart_type: step.chart_type,
+                                    chart_image_base64: step.chart_image_base64,
+                                    insights: step.insights,
+                                }}
+                                isCompleted={true}
+                            />
                         ))}
                     </div>
                 )}

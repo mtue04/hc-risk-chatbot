@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import structlog
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
-from fastapi.responses import FileResponse
-from langchain_core.messages import AIMessage, HumanMessage
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
 
 from .graph import get_chatbot_graph
@@ -28,6 +30,18 @@ app = FastAPI(
     title="HC Risk Chatbot",
     version="0.3.0",
     description="LangGraph-powered conversational credit risk analysis with multi-step iterative analysis",
+)
+
+# Configure CORS for frontend access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",  # Frontend dev
+        "http://localhost:8501",  # Streamlit (if used)
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # In-memory conversation storage (replace with Redis/DB in production)
@@ -186,7 +200,18 @@ async def chat(request: ChatRequest) -> ChatResponse:
         # Handle case where content is a list (Gemini multi-part response)
         answer = last_ai_message.content
         if isinstance(answer, list):
-            answer = "\n".join(str(part) for part in answer)
+            # Gemini returns list of content parts like [{"type": "text", "text": "..."}]
+            # Extract the text from each part
+            text_parts = []
+            for part in answer:
+                if isinstance(part, dict) and "text" in part:
+                    text_parts.append(part["text"])
+                elif isinstance(part, str):
+                    text_parts.append(part)
+                else:
+                    # Fallback for unknown structure
+                    text_parts.append(str(part))
+            answer = "\n".join(text_parts)
         elif not isinstance(answer, str):
             answer = str(answer)
 
@@ -260,6 +285,270 @@ async def chat(request: ChatRequest) -> ChatResponse:
             status_code=500,
             detail=f"Error processing chat request: {str(exc)}"
         )
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    Streaming chat endpoint that returns intermediate AI messages in real-time.
+
+    Uses Server-Sent Events (SSE) to stream:
+    - Each AI message as it's generated
+    - Tool call notifications
+    - Tool results
+    - Final response
+    """
+    session_id = request.session_id or str(uuid4())
+
+    logger.info(
+        "chat_stream_request",
+        session=session_id,
+        question=request.question,
+        has_applicant_id=request.applicant_id is not None,
+    )
+
+    async def event_generator():
+        try:
+            # Get conversation history
+            conversation_history = _conversations.get(session_id, [])
+
+            # Create human message
+            human_message = HumanMessage(content=request.question)
+
+            # Use LLM to determine if this is an analysis query
+            is_analysis_query = False
+
+            # Get LLM for routing
+            import os as os_module
+            gemini_api_key = os_module.getenv("GEMINI_API_KEY")
+            gemini_model = os_module.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+            if gemini_api_key and gemini_api_key != "changeme":
+                from langchain_google_genai import ChatGoogleGenerativeAI
+
+                llm = ChatGoogleGenerativeAI(
+                    model=gemini_model,
+                    google_api_key=gemini_api_key,
+                    temperature=0,
+                    convert_system_message_to_human=True,
+                )
+
+                routing_prompt = f"""You are a query classifier. Determine if the user's question requires:
+A) Normal chat with tools (for specific applicant queries, SHAP explanations, quick lookups)
+B) Multi-step data analysis workflow (for comprehensive analysis, trends, patterns across dataset)
+
+User Question: {request.question}
+
+Examples of Type A (normal chat):
+- "What is the risk for applicant 12345?"
+- "Explain why applicant 67890 was classified as high risk"
+- "Show me the SHAP values for this person"
+- "What are the top factors for applicant X?"
+
+Examples of Type B (multi-step analysis):
+- "Analyze trends in default rates over time"
+- "Compare income distributions between defaulters and non-defaulters"
+- "Find insights about what factors lead to high risk"
+- "Explore patterns in the dataset"
+- "Show me comprehensive analysis of age groups"
+
+Respond with ONLY one word: "NORMAL" or "ANALYSIS"
+"""
+
+                try:
+                    response = llm.invoke([HumanMessage(content=routing_prompt)])
+                    decision = response.content.strip().upper()
+                    is_analysis_query = "ANALYSIS" in decision
+                    logger.info("llm_routing_decision", query=request.question, decision=decision, is_analysis=is_analysis_query)
+                except Exception as exc:
+                    logger.error("llm_routing_error", error=str(exc))
+                    # Fallback to keyword detection on error
+                    query_lower = request.question.lower()
+                    is_analysis_query = any(keyword in query_lower for keyword in [
+                        'analyze', 'analysis', 'trend', 'distribution', 'pattern',
+                        'compare', 'comparison', 'explore', 'insights', 'breakdown'
+                    ])
+
+            # If it's an analysis query, use real-time streaming analysis
+            if is_analysis_query:
+                logger.info("using_streaming_analysis", query=request.question)
+
+                from .analysis_streaming import execute_analysis_stream
+
+                # Stream each step as it completes
+                async for message in execute_analysis_stream(request.question):
+                    # Check if this message contains an analysis step result
+                    step_result = message.additional_kwargs.get("step_result") if hasattr(message, "additional_kwargs") else None
+
+                    if step_result:
+                        # Send as analysis_step event
+                        event_data = {
+                            "type": "analysis_step",
+                            "step_result": step_result,
+                        }
+                        yield f"data: {json.dumps(event_data)}\n\n"
+                    else:
+                        # Send as regular AI message (final summary)
+                        event_data = {
+                            "type": "ai_message",
+                            "content": message.content,
+                            "has_tool_calls": False,
+                            "tool_calls": [],
+                        }
+                        yield f"data: {json.dumps(event_data)}\n\n"
+
+                # Send done event
+                yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
+
+                # Save to conversation history
+                _conversations[session_id] = conversation_history + [human_message]
+                return
+
+            # Build initial state
+            initial_state = {
+                "messages": conversation_history + [human_message],
+                "session_id": session_id,
+                "applicant_id": request.applicant_id,
+                "risk_score": None,
+                "last_tool_output": None,
+                "requires_analysis": False,
+                "analysis_request": None,
+            }
+
+            # Get chatbot graph
+            graph = get_chatbot_graph()
+
+            # Stream the graph execution
+            async for event in graph.astream(initial_state, stream_mode="messages"):
+                # event is a tuple: (message, metadata)
+                if isinstance(event, tuple) and len(event) == 2:
+                    message, metadata = event
+                else:
+                    continue
+
+                # Only stream new messages (not replayed history)
+                if metadata.get("langgraph_node") in ["agent", "call_model", "analysis_subgraph"]:
+                    if isinstance(message, AIMessage):
+                        # Check if this message contains an analysis step result
+                        step_result = message.additional_kwargs.get("step_result") if hasattr(message, "additional_kwargs") else None
+
+                        if step_result:
+                            # Send as analysis_step event (with chart data)
+                            event_data = {
+                                "type": "analysis_step",
+                                "step_result": step_result,
+                            }
+                            yield f"data: {json.dumps(event_data)}\n\n"
+                        else:
+                            # Extract content
+                            content = message.content
+                            if isinstance(content, list):
+                                # Handle Gemini multi-part response
+                                text_parts = []
+                                for part in content:
+                                    if isinstance(part, dict) and "text" in part:
+                                        text_parts.append(part["text"])
+                                    elif isinstance(part, str):
+                                        text_parts.append(part)
+                                content = "\n".join(text_parts)
+                            elif not isinstance(content, str):
+                                content = str(content)
+
+                            # Check if this message has tool calls
+                            has_tool_calls = hasattr(message, "tool_calls") and bool(message.tool_calls)
+
+                            # Send AI message event
+                            event_data = {
+                                "type": "ai_message",
+                                "content": content,
+                                "has_tool_calls": has_tool_calls,
+                                "tool_calls": [
+                                    {
+                                        "name": call.get("name"),
+                                        "args": call.get("args"),
+                                        "id": call.get("id"),
+                                    }
+                                    for call in (message.tool_calls or [])
+                                ] if has_tool_calls else [],
+                            }
+                            yield f"data: {json.dumps(event_data)}\n\n"
+
+                elif metadata.get("langgraph_node") == "tools":
+                    if isinstance(message, ToolMessage):
+                        # Parse tool result
+                        try:
+                            result = json.loads(message.content) if isinstance(message.content, str) else message.content
+                        except json.JSONDecodeError:
+                            result = {"raw_output": message.content}
+
+                        # Send tool result event
+                        event_data = {
+                            "type": "tool_result",
+                            "tool_call_id": getattr(message, "tool_call_id", None),
+                            "result": result,
+                        }
+                        yield f"data: {json.dumps(event_data)}\n\n"
+
+            # After streaming completes, get final state to update conversation history
+            final_result = await graph.ainvoke(initial_state)
+            _conversations[session_id] = final_result["messages"]
+
+            # Check if analysis workflow was triggered
+            if final_result.get("requires_analysis"):
+                # Analysis workflow detected - generate a thread ID for the frontend
+                analysis_thread_id = str(uuid4())
+
+                # Collect charts from /tmp/analysis_charts/ and store them
+                import os
+                import glob
+                chart_dir = "/tmp/analysis_charts"
+                chart_files = sorted(glob.glob(f"{chart_dir}/step_*.png"))
+
+                # Store charts in memory for the status endpoint to fetch
+                if analysis_thread_id not in _analysis_charts:
+                    _analysis_charts[analysis_thread_id] = {}
+
+                for chart_file in chart_files:
+                    # Extract step number from filename like "step_1_line.png"
+                    filename = os.path.basename(chart_file)
+                    step_num = int(filename.split('_')[1])
+
+                    # Encode to base64
+                    try:
+                        with open(chart_file, 'rb') as f:
+                            chart_base64 = base64.b64encode(f.read()).decode('utf-8')
+                            _analysis_charts[analysis_thread_id][step_num] = {
+                                "path": chart_file,
+                                "base64": chart_base64
+                            }
+                    except Exception as e:
+                        logger.warning("failed_to_encode_chart", file=chart_file, error=str(e))
+
+                # Send analysis workflow notification with thread ID
+                yield f"data: {json.dumps({'type': 'analysis_started', 'thread_id': analysis_thread_id})}\n\n"
+
+                logger.info("analysis_workflow_triggered", thread_id=analysis_thread_id, num_charts=len(chart_files))
+
+            # Send completion event
+            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
+
+        except Exception as exc:
+            logger.error("chat_stream_error", error=str(exc), session=session_id)
+            error_data = {
+                "type": "error",
+                "error": str(exc),
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 
 @app.delete("/chat/{session_id}")
@@ -605,6 +894,34 @@ async def get_analysis_status(thread_id: str) -> AnalysisResponse:
     - Final summary (if completed)
     """
     try:
+        # First check if this is an inline analysis (stored in _analysis_charts)
+        if thread_id in _analysis_charts:
+            # This is an inline analysis - create a mock status response
+            charts = _analysis_charts[thread_id]
+
+            # Create mock step results with charts
+            step_results = []
+            for step_num, chart_data in sorted(charts.items()):
+                step_results.append({
+                    "step_number": step_num,
+                    "sql_query": f"-- SQL query for step {step_num}",
+                    "data_summary": f"Analysis step {step_num} completed",
+                    "chart_type": "visualization",
+                    "chart_image_path": chart_data["path"],
+                    "chart_image_base64": chart_data["base64"],
+                    "insights": f"Insights from step {step_num}",
+                })
+
+            return AnalysisResponse(
+                thread_id=thread_id,
+                status="completed",
+                plan=None,
+                step_results=step_results,
+                final_summary="Analysis completed. See charts above for visualizations.",
+                current_step=len(charts),
+            )
+
+        # Otherwise, try to get from checkpointed workflow
         graph = get_analysis_graph()
         config = {"configurable": {"thread_id": thread_id}}
 

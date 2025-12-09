@@ -6,7 +6,8 @@ import { Sparkles, TrendingUp, Users, HelpCircle, RotateCcw } from 'lucide-react
 import Sidebar, { ChatHistory } from '@/components/Sidebar';
 import ChatMessage, { Message } from '@/components/ChatMessage';
 import ChatInput from '@/components/ChatInput';
-import { sendMessage, sendMultimodal } from '@/lib/api';
+import AnalysisPanel from '@/components/AnalysisPanel';
+import { sendMessage, sendMultimodal, sendMessageStream, StreamEvent } from '@/lib/api';
 import styles from './page.module.css';
 import { ChartData } from '@/components/charts/ChartRenderer';
 
@@ -281,6 +282,8 @@ export default function Home() {
     const [sessionId, setSessionId] = useState<string>(() => uuidv4());
     const [currentChatId, setCurrentChatId] = useState<string | null>(null);
     const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
+    const [analysisThreadId, setAnalysisThreadId] = useState<string | null>(null);
+    const [showAnalysisPanel, setShowAnalysisPanel] = useState(false);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -335,30 +338,165 @@ export default function Home() {
         }
 
         try {
-            let response;
-
             if (file || audio) {
-                // Multimodal request
+                // Multimodal request - use non-streaming API
                 const question = audio
                     ? 'Transcribe and respond to this voice message'
                     : `Analyze this document: ${file?.name}. ${content}`;
 
-                response = await sendMultimodal(question, sessionId, audio, file);
+                const response = await sendMultimodal(question, sessionId, audio, file);
+
+                // Check if response includes analysis thread ID
+                const threadId = (response as any).analysis_thread_id;
+                if (threadId) {
+                    setAnalysisThreadId(threadId);
+                    setShowAnalysisPanel(true);
+                }
+
+                // Create assistant message
+                const assistantMessage: Message = {
+                    role: 'assistant',
+                    content: response.answer,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    charts: parseChartsFromToolOutputs(response.tool_outputs),
+                    tool_outputs: response.tool_outputs,
+                };
+
+                setMessages(prev => [...prev, assistantMessage]);
             } else {
-                // Text-only request
-                response = await sendMessage(content, sessionId);
+                // Text-only request - use STREAMING
+                let currentMessage: Message | null = null;
+                let allToolOutputs: any[] = [];
+                let messageIndex = -1;
+
+                await sendMessageStream(content, sessionId, undefined, (event: StreamEvent) => {
+                    if (event.type === 'ai_message') {
+                        if (event.has_tool_calls) {
+                            // Message with tool calls - create new message and store tools
+                            const newMessage: Message = {
+                                role: 'assistant',
+                                content: event.content || '',
+                                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                                tool_outputs: event.tool_calls,
+                            };
+                            currentMessage = newMessage;
+                            setMessages(prev => {
+                                messageIndex = prev.length;
+                                return [...prev, newMessage];
+                            });
+                            allToolOutputs.push(...(event.tool_calls || []));
+                        } else {
+                            // Regular AI message (no tool calls)
+                            if (currentMessage === null) {
+                                // First message - create it
+                                currentMessage = {
+                                    role: 'assistant',
+                                    content: event.content || '',
+                                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                                };
+                                setMessages(prev => {
+                                    messageIndex = prev.length;
+                                    return [...prev, currentMessage!];
+                                });
+                            } else {
+                                // Continuation of previous message - append content
+                                const newContent = event.content || '';
+                                if (newContent.trim()) {
+                                    setMessages(prev => {
+                                        const updated = [...prev];
+                                        if (messageIndex >= 0 && messageIndex < updated.length) {
+                                            const existingContent = updated[messageIndex].content;
+                                            // Smart joining: use space if content flows together, newline if it's a new paragraph
+                                            const separator = newContent.startsWith('\n') || existingContent.endsWith('\n') ? '' : ' ';
+                                            updated[messageIndex] = {
+                                                ...updated[messageIndex],
+                                                content: existingContent + separator + newContent,
+                                            };
+                                        }
+                                        return updated;
+                                    });
+                                }
+                            }
+                        }
+                    } else if (event.type === 'tool_result') {
+                        // Tool result arrived
+                        allToolOutputs.push(event.result);
+
+                        // Update the last message to include this tool output
+                        setMessages(prev => {
+                            const updated = [...prev];
+                            if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
+                                const lastMsg = updated[updated.length - 1];
+                                updated[updated.length - 1] = {
+                                    ...lastMsg,
+                                    tool_outputs: [...(lastMsg.tool_outputs || []), event.result],
+                                };
+                            }
+                            return updated;
+                        });
+                    } else if (event.type === 'analysis_step') {
+                        // Analysis step completed - add step result to message
+                        try {
+                            if (event.step_result) {
+                                // If no message exists yet, create one for the analysis results
+                                if (currentMessage === null || messageIndex < 0) {
+                                    currentMessage = {
+                                        role: 'assistant',
+                                        content: '',
+                                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                                        analysis_steps: [],
+                                    };
+                                    setMessages(prev => {
+                                        messageIndex = prev.length;
+                                        return [...prev, currentMessage!];
+                                    });
+                                }
+
+                                const stepResult = event.step_result;
+                                setMessages(prev => {
+                                    const updated = [...prev];
+                                    if (messageIndex < updated.length) {
+                                        const existingSteps = updated[messageIndex].analysis_steps || [];
+                                        updated[messageIndex] = {
+                                            ...updated[messageIndex],
+                                            analysis_steps: [...existingSteps, stepResult],
+                                        };
+                                    }
+                                    return updated;
+                                });
+                            }
+                        } catch (err) {
+                            console.error('Error processing analysis step:', err, event.step_result);
+                        }
+                    } else if (event.type === 'analysis_started') {
+                        // Analysis workflow started - show the analysis panel
+                        if (event.thread_id) {
+                            setAnalysisThreadId(event.thread_id);
+                            setShowAnalysisPanel(true);
+                        }
+                    } else if (event.type === 'done') {
+                        // Stream complete - generate charts from collected tool outputs
+                        if (allToolOutputs.length > 0) {
+                            const charts = parseChartsFromToolOutputs(allToolOutputs);
+                            if (charts.length > 0) {
+                                setMessages(prev => {
+                                    const updated = [...prev];
+                                    if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
+                                        updated[updated.length - 1] = {
+                                            ...updated[updated.length - 1],
+                                            charts,
+                                        };
+                                    }
+                                    return updated;
+                                });
+                            }
+                        }
+                    } else if (event.type === 'error') {
+                        console.error('Stream error:', event.error);
+                        throw new Error(event.error || 'Stream error');
+                    }
+                });
             }
-
-            // Create assistant message with potential charts
-            const assistantMessage: Message = {
-                role: 'assistant',
-                content: response.answer,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                // Parse charts from tool_outputs - convert backend format to frontend chart format
-                charts: parseChartsFromToolOutputs(response.tool_outputs),
-            };
-
-            setMessages(prev => [...prev, assistantMessage]);
 
         } catch (error) {
             console.error('Chat error:', error);
@@ -483,6 +621,19 @@ export default function Home() {
                         </div>
                     )}
                 </div>
+
+                {/* Analysis Workflow Panel */}
+                {showAnalysisPanel && analysisThreadId && (
+                    <div className={styles.analysisContainer}>
+                        <AnalysisPanel
+                            threadId={analysisThreadId}
+                            onClose={() => {
+                                setShowAnalysisPanel(false);
+                                setAnalysisThreadId(null);
+                            }}
+                        />
+                    </div>
+                )}
 
                 {/* Input Area */}
                 <div className={styles.inputArea}>

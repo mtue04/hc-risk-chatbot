@@ -140,6 +140,14 @@
     color: var(--text-primary);
 }
 
+/* Tool Calls Container */
+.toolCallsContainer {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 /* Charts Container */
 .chartsContainer {
     margin-top: 16px;
