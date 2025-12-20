@@ -223,30 +223,40 @@ USER REQUEST: {state["user_request"]}
 DATABASE SCHEMA:
 {schema_summary}
 
-Create a step-by-step analysis plan. Each step should:
-1. Have a clear description of what to analyze
-2. Specify if SQL queries are needed
-3. Specify what type of chart to create (line, bar, scatter, histogram, boxplot, or none)
+Create a step-by-step analysis plan. 
+
+CRITICAL RULES:
+1. Each step MUST include an SQL query to retrieve data and a chart to visualize results
+2. Do NOT create conceptual-only steps like "Identify data" or "Define columns" - every step must retrieve actual data
+3. Do NOT create steps that just describe creating a chart - combine data retrieval and visualization into ONE step
+4. Maximum 4-5 steps for efficiency
+5. Each step should be self-contained: query data AND visualize it in the same step
+
+For each step, specify:
+- description: What data to retrieve and visualize (e.g., "Calculate and visualize average EXT_SOURCE_2 and EXT_SOURCE_3 by default status")
+- sql_needed: ALWAYS true (steps without SQL are not allowed)
+- chart_type: line, bar, scatter, histogram, boxplot, grouped_bar
 
 Respond with a JSON object in this exact format:
 {{
     "steps": [
         {{
             "step_number": 1,
-            "description": "Analyze monthly revenue trends",
+            "description": "Calculate average external scores by default status and visualize comparison",
             "sql_needed": true,
-            "chart_type": "line"
-        }},
-        {{
-            "step_number": 2,
-            "description": "Compare user cohorts by age group",
-            "sql_needed": true,
-            "chart_type": "bar"
+            "chart_type": "grouped_bar"
         }}
     ]
 }}
 
-Keep the plan focused and limit to 3-5 steps. Make each step specific and actionable.
+Example GOOD steps:
+- "Calculate average income by age group and visualize as bar chart"
+- "Analyze correlation between credit amount and default rate"
+
+Example BAD steps (DO NOT CREATE THESE):
+- "Identify relevant columns" (no data, no chart)
+- "Create a grouped bar chart" (chart creation should be part of analysis step)
+- "Confirm data is available" (no actionable output)
 """
 
     try:
@@ -541,6 +551,65 @@ def data_analyzer_node(state: AnalysisState) -> dict:
                     ax.set_ylabel('Value', fontsize=12, fontweight='bold')
                     ax.tick_params(axis='x', rotation=45)
                     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+        elif chart_type == "grouped_bar":
+            # Grouped bar chart - expects data in long format or multiple value columns
+            # Format 1: [category, value1, value2, ...] - wide format
+            # Format 2: [category, metric_name, value] - long format
+            if len(df.columns) >= 2:
+                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                non_numeric_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+                
+                if len(numeric_cols) >= 2 and len(non_numeric_cols) >= 1:
+                    # Wide format: category + multiple value columns
+                    category_col = non_numeric_cols[0]
+                    # Melt the data to long format for grouped bar
+                    df_melted = df.melt(
+                        id_vars=[category_col],
+                        value_vars=numeric_cols,
+                        var_name='Metric',
+                        value_name='Value'
+                    )
+                    sns.barplot(
+                        data=df_melted,
+                        x=category_col,
+                        y='Value',
+                        hue='Metric',
+                        palette="Set2",
+                        ax=ax
+                    )
+                    ax.set_xlabel(category_col, fontsize=12, fontweight='bold')
+                    ax.set_ylabel('Value', fontsize=12, fontweight='bold')
+                    ax.legend(title='Metric', loc='upper right')
+                    
+                elif len(df.columns) == 3:
+                    # Assume long format: [category, metric, value]
+                    sns.barplot(
+                        data=df,
+                        x=df.columns[0],
+                        y=df.columns[2],
+                        hue=df.columns[1],
+                        palette="Set2",
+                        ax=ax
+                    )
+                    ax.set_xlabel(df.columns[0], fontsize=12, fontweight='bold')
+                    ax.set_ylabel(df.columns[2], fontsize=12, fontweight='bold')
+                    ax.legend(title=df.columns[1], loc='upper right')
+                    
+                else:
+                    # Fallback to regular bar chart
+                    sns.barplot(
+                        data=df,
+                        x=df.columns[0],
+                        y=df.columns[1] if len(numeric_cols) > 0 else df.columns[1],
+                        palette="Blues_d",
+                        ax=ax
+                    )
+                    ax.set_xlabel(df.columns[0], fontsize=12, fontweight='bold')
+                    ax.set_ylabel(df.columns[1], fontsize=12, fontweight='bold')
+                
+                ax.tick_params(axis='x', rotation=45)
+                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
 
         ax.set_title(step_info['description'], fontsize=14, fontweight='bold', pad=20)
         plt.tight_layout()
